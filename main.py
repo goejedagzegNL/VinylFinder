@@ -652,17 +652,31 @@ class VinylFinder(QMainWindow):
 
                     normalized_title = title_text.casefold().strip()
 
-                    if any(term in normalized_title for term in action_terms):
+                    if normalized_title in action_terms:
                         continue
                     
                     parent = link.parent
-                    context = (
-                        parent.get_text(" ", strip=True)
-                        if parent else title_text
-                    )
+
+                    # Neem ook tekst van enkele bovenliggende HTML-elementen mee.
+                    context_parts = []
+                    node = link
+
+                    for _ in range(4):
+                        if node is None:
+                            break
+
+                        text = node.get_text(" ", strip=True)
+                        if text:
+                            context_parts.append(text)
+
+                        node = node.parent
+
+                    context = " ".join(dict.fromkeys(context_parts))
                     searchable = (title_text + " " + context).casefold()
 
-                    if not all(term in searchable for term in terms):
+                    # Zoek minder strikt: niet ieder zoekwoord hoeft aanwezig te zijn.
+                    # De producttitel zelf blijft behouden.
+                    if terms and not any(term in searchable for term in terms):
                         continue
 
                     product_url = urljoin(url, link["href"])
