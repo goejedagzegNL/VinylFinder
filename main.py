@@ -501,14 +501,162 @@ class VinylFinder(QMainWindow):
         )
 
         
+
     def search_products(self):
-        QMessageBox.information(
-            self,
-            "Search Products",
-            "The product search function is connected. "
-            "Automatic product retrieval will be added next.",
+        parts = self.current_query_parts()
+
+        if not any(parts.get(key, "").strip()
+                   for key in ("artist", "title", "album")):
+            QMessageBox.information(
+                self,
+                "Search Products",
+                "Enter an artist, title or album first.",
+            )
+            return
+
+        self.product_table.setRowCount(0)
+        self.statusBar().showMessage("Searching enabled stores...")
+
+        with connect_db() as conn:
+            sources = conn.execute(
+                "SELECT * FROM sources WHERE enabled = 1 ORDER BY name"
+            ).fetchall()
+
+        terms = [
+            parts.get(key, "").strip().casefold()
+            for key in ("artist", "title", "album")
+            if parts.get(key, "").strip()
+        ]
+
+        found = 0
+        failed = []
+
+        for source in sources:
+            url = build_search_url(
+                source["url_template"],
+                parts["query"],
+                parts["artist"],
+                parts.get("title", ""),
+                parts["album"],
+                parts["year"],
+                parts["format"],
+            )
+
+            if not valid_http_url(url):
+                failed.append(source["name"])
+                continue
+
+            try:
+                response = requests.get(
+                    url,
+                    timeout=15,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 Chrome/131.0 Safari/537.36"
+                        )
+                    },
+                )
+                response.raise_for_status()
+
+                if "html" not in response.headers.get(
+                    "Content-Type", ""
+                ).lower():
+                    failed.append(source["name"])
+                    continue
+
+                soup = BeautifulSoup(response.text, "html.parser")
+
+                for link in soup.find_all("a", href=True):
+                    title_text = " ".join(link.stripped_strings).strip()
+
+                    if len(title_text) < 5:
+                        continue
+
+                    parent = link.parent
+                    context = (
+                        parent.get_text(" ", strip=True)
+                        if parent else title_text
+                    )
+                    searchable = (title_text + " " + context).casefold()
+
+                    if not all(term in searchable for term in terms):
+                        continue
+
+                    product_url = urljoin(url, link["href"])
+
+                    if not valid_http_url(product_url):
+                        continue
+
+                    if any(
+                        part in product_url.casefold()
+                        for part in (
+                            "/search", "/zoek/", "/account",
+                            "/cart", "/winkelwagen", "/login",
+                        )
+                    ):
+                        continue
+
+                    if product_url.rstrip("/") == url.rstrip("/"):
+                        continue
+
+                    digital_terms = (
+                        "digital download", "mp3 download",
+                        "streaming only", "digital album",
+                    )
+                    if any(term in searchable for term in digital_terms):
+                        continue
+
+                    row = self.product_table.rowCount()
+                    self.product_table.insertRow(row)
+
+                    self.product_table.setItem(
+                        row, 0, QTableWidgetItem(source["name"])
+                    )
+                    self.product_table.setItem(
+                        row, 1, QTableWidgetItem(title_text)
+                    )
+
+                    price_match = re.search(
+                        r"€\s?\d+(?:[.,]\d{2})?",
+                        context,
+                    )
+                    price = (
+                        price_match.group(0)
+                        if price_match else "Unknown"
+                    )
+                    self.product_table.setItem(
+                        row, 2, QTableWidgetItem(price)
+                    )
+
+                    url_item = QTableWidgetItem(product_url)
+                    url_item.setToolTip(product_url)
+                    self.product_table.setItem(row, 3, url_item)
+                    found += 1
+
+            except requests.RequestException:
+                failed.append(source["name"])
+
+        self.statusBar().showMessage(
+            f"Found {found} possible product results."
         )
 
+        if failed:
+            QMessageBox.information(
+                self,
+                "Some stores could not be searched",
+                "Automatic retrieval failed for:\n"
+                + "\n".join(failed)
+                + "\n\nSome stores may block automated requests.",
+            )
+
+        if found == 0:
+            QMessageBox.information(
+                self,
+                "No matching products",
+                "No matching product links were identified. "
+                "This does not prove that the stores have no stock.",
+            )
     def clear_filters(self):
         for widget in (
             self.artist_edit, self.album_edit, self.label_edit,
