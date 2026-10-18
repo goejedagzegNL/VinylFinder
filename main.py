@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QAbstractItemView,
     QFileDialog,
+    QProgressDialog,
 )
 
 
@@ -603,16 +604,20 @@ class VinylFinder(QMainWindow):
         self.product_table.show()
         self.product_table.setRowCount(0)
 
-        # Show a Searching popup while products are being retrieved.
-        searching_popup = QMessageBox(self)
+        searching_popup = QProgressDialog(
+            "Searching...", "", 0, 0, self
+        )
         searching_popup.setWindowTitle("VinylFinder")
-        searching_popup.setText("Searching...")
-        searching_popup.setStandardButtons(QMessageBox.StandardButton.NoButton)
-        searching_popup.setModal(False)
+        searching_popup.setCancelButton(None)
+        searching_popup.setMinimumDuration(0)
+        searching_popup.setAutoClose(False)
+        searching_popup.setAutoReset(False)
+        searching_popup.setWindowModality(
+            Qt.WindowModality.ApplicationModal
+        )
+        searching_popup.setMinimumWidth(240)
+        searching_popup.setMaximumWidth(240)
         searching_popup.show()
-        QApplication.processEvents()
-
-        self.statusBar().showMessage("Searching enabled stores...")
         QApplication.processEvents()
 
         self.record_search(parts["query"])
@@ -831,6 +836,8 @@ class VinylFinder(QMainWindow):
         session.close()
 
         searching_popup.close()
+        searching_popup.deleteLater()
+        QApplication.processEvents()
 
         self.statusBar().showMessage(
             f"Found {found} possible product results."
