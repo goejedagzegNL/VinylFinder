@@ -20,7 +20,7 @@ from urllib.parse import (
 import requests
 from bs4 import BeautifulSoup
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -603,6 +603,15 @@ class VinylFinder(QMainWindow):
         self.product_table.show()
         self.product_table.setRowCount(0)
 
+        # Show a Searching popup while products are being retrieved.
+        searching_popup = QMessageBox(self)
+        searching_popup.setWindowTitle("VinylFinder")
+        searching_popup.setText("Searching...")
+        searching_popup.setStandardButtons(QMessageBox.StandardButton.NoButton)
+        searching_popup.setModal(False)
+        searching_popup.show()
+        QApplication.processEvents()
+
         self.statusBar().showMessage("Searching enabled stores...")
         QApplication.processEvents()
 
@@ -821,6 +830,8 @@ class VinylFinder(QMainWindow):
 
         session.close()
 
+        searching_popup.close()
+
         self.statusBar().showMessage(
             f"Found {found} possible product results."
         )
@@ -828,21 +839,15 @@ class VinylFinder(QMainWindow):
         if failed:
             QMessageBox.information(
                 self,
-                "Some stores could not be searched",
-                "Automatic retrieval failed for:\n"
-                + "\n".join(failed)
-                + "\n\nSome stores may block automated requests "
-                "or require JavaScript.",
+                "Article Not Found",
+                "Article Not Found",
             )
 
         if found == 0:
             QMessageBox.information(
                 self,
-                "No matching products",
-                "No matching product links were identified. "
-                "Try a shorter or more specific search. "
-                "The stores may require JavaScript or block "
-                "automatic retrieval.",
+                "Article Not Found",
+                "Article Not Found",
             )
 
     # ---------------------------------------------------------
