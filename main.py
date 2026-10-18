@@ -543,353 +543,352 @@ class VinylFinder(QMainWindow):
             f"Prepared {self.results_table.rowCount()} search destinations."
         )
 
-$-----------------------------------------------------------------     
 
-def search_products(self):
-    parts = self.current_query_parts()
+        def search_products(self):
+            parts = self.current_query_parts()
 
-    if not any(
-        parts.get(key, "").strip()
-        for key in ("artist", "title", "album")
-    ):
-        QMessageBox.information(
-            self,
-            "Search Products",
-            "Enter an artist, title or album first.",
-        )
-        return
+        if not any(
+            parts.get(key, "").strip()
+            for key in ("artist", "title", "album")
+            ):
+                
+            QMessageBox.information(
+                self,
+                "Search Products",
+                "Enter an artist, title or album first.",
+            )
+            return
 
-    # Show only the product results.
-    self.results_table.hide()
-    self.product_table.show()
-    self.product_table.setRowCount(0)
+            # Show only the product results.
+            self.results_table.hide()
+            self.product_table.show()
+            self.product_table.setRowCount(0)
 
-    # Three columns: store, product and action.
-    self.product_table.setColumnCount(3)
-    self.product_table.setHorizontalHeaderLabels(
-        ["Website / Store", "Product", "Action"]
-    )
-    self.product_table.horizontalHeader().setSectionResizeMode(
-        0, QHeaderView.ResizeMode.ResizeToContents
-    )
-    self.product_table.horizontalHeader().setSectionResizeMode(
-        1, QHeaderView.ResizeMode.Stretch
-    )
-    self.product_table.horizontalHeader().setSectionResizeMode(
-        2, QHeaderView.ResizeMode.ResizeToContents
-    )
+            # Three columns: store, product and action.
+            self.product_table.setColumnCount(3)
+            self.product_table.setHorizontalHeaderLabels(
+                ["Website / Store", "Product", "Action"]
+            )
+            self.product_table.horizontalHeader().setSectionResizeMode(
+                0, QHeaderView.ResizeMode.ResizeToContents
+            )
+            self.product_table.horizontalHeader().setSectionResizeMode(
+                1, QHeaderView.ResizeMode.Stretch
+            )
+            self.product_table.horizontalHeader().setSectionResizeMode(
+                2, QHeaderView.ResizeMode.ResizeToContents
+            )
+            self.statusBar().showMessage("Searching enabled stores...")
+            QApplication.processEvents()
 
-    self.statusBar().showMessage("Searching enabled stores...")
-    QApplication.processEvents()
+            with connect_db() as conn:
+                sources = conn.execute(
+                    "SELECT * FROM sources WHERE enabled = 1 ORDER BY name"
+                ).fetchall()
 
-    with connect_db() as conn:
-        sources = conn.execute(
-            "SELECT * FROM sources WHERE enabled = 1 ORDER BY name"
-        ).fetchall()
-
-    # Use the artist, title and album as the main search terms.
-    terms = [
-        parts.get(key, "").strip().casefold()
-        for key in ("artist", "title", "album")
-        if parts.get(key, "").strip()
+            # Use the artist, title and album as the main search terms.
+            terms = [
+                parts.get(key, "").strip().casefold()
+                for key in ("artist", "title", "album")
+                if parts.get(key, "").strip()
     ]
 
-    action_terms = (
-        "toevoegen aan winkelwagen",
-        "in winkelwagen",
-        "winkelwagen",
-        "add to cart",
-        "add to bag",
-        "buy now",
-        "shop now",
-        "checkout",
-        "view cart",
-        "view basket",
-        "naar de kassa",
-        "bestellen",
-        "afrekenen",
-        "verder winkelen",
-        "login",
-        "log in",
-        "sign in",
-        "register",
-        "account",
-        "search",
-        "zoeken",
-        "volgende",
-        "previous",
-        "next page",
-        "add to wishlist",
-        "toevoegen aan verlanglijst",
-    )
-
-    excluded_url_parts = (
-        "/search",
-        "/zoeken",
-        "/zoek/",
-        "/account",
-        "/cart",
-        "/basket",
-        "/winkelwagen",
-        "/checkout",
-        "/login",
-        "/register",
-        "/wishlist",
-    )
-
-    digital_terms = (
-        "digital download",
-        "mp3 download",
-        "streaming only",
-        "digital album",
-        "download code",
-        "instant download",
-    )
-
-    seen_urls = set()
-    failed = []
-    found = 0
-
-    def normalize(text):
-        return " ".join((text or "").casefold().split())
-
-    def matches_terms(text):
-        normalized = normalize(text)
-        return bool(normalized) and all(
-            term in normalized for term in terms
-        )
-
-    def is_action(text):
-        normalized = normalize(text)
-        return any(term in normalized for term in action_terms)
-
-    def is_digital(text):
-        normalized = normalize(text)
-        return any(term in normalized for term in digital_terms)
-
-    def add_product(source_name, product_title, product_url):
-        nonlocal found
-
-        product_title = " ".join((product_title or "").split())
-        product_url = (product_url or "").strip()
-
-        if len(product_title) < 5:
-            return
-
-        if is_action(product_title) or is_digital(product_title):
-            return
-
-        if not matches_terms(product_title):
-            return
-
-        if not valid_http_url(product_url):
-            return
-
-        normalized_url = product_url.rstrip("/").casefold()
-
-        if normalized_url in seen_urls:
-            return
-
-        seen_urls.add(normalized_url)
-
-        row = self.product_table.rowCount()
-        self.product_table.insertRow(row)
-
-        self.product_table.setItem(
-            row, 0, QTableWidgetItem(source_name)
-        )
-        self.product_table.setItem(
-            row, 1, QTableWidgetItem(product_title)
-        )
-
-        open_btn = QPushButton("Open Product")
-        open_btn.clicked.connect(
-            lambda checked=False, target=product_url:
-                webbrowser.open(target)
-        )
-        self.product_table.setCellWidget(row, 2, open_btn)
-
-        found += 1
-
-    for source in sources:
-        url = build_search_url(
-            source["url_template"],
-            parts["query"],
-            parts.get("artist", ""),
-            parts.get("title", ""),
-            parts.get("album", ""),
-            parts.get("year", ""),
-            parts.get("format", ""),
-        )
-
-        if not valid_http_url(url):
-            failed.append(source["name"])
-            continue
-
-        try:
-            response = requests.get(
-                url,
-                timeout=20,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/131.0.0.0 Safari/537.36"
-                    ),
-                    "Accept": (
-                        "text/html,application/xhtml+xml,"
-                        "application/ld+json;q=0.9,*/*;q=0.8"
-                    ),
-                    "Accept-Language": "en-US,en;q=0.9,nl;q=0.8",
-                },
+            action_terms = (
+                "toevoegen aan winkelwagen",
+                "in winkelwagen",
+                "winkelwagen",
+                "add to cart",
+                "add to bag",
+                "buy now",
+                "shop now",
+                "checkout",
+                "view cart",
+                "view basket",
+                "naar de kassa",
+                "bestellen",
+                "afrekenen",
+                "verder winkelen",
+                "login",
+                "log in",
+                "sign in",
+                "register",
+                "account",
+                "search",
+                "zoeken",
+                "volgende",
+                "previous",
+                "next page",
+                "add to wishlist",
+                "toevoegen aan verlanglijst",
             )
-            response.raise_for_status()
 
-            content_type = response.headers.get(
-                "Content-Type", ""
-            ).casefold()
+            excluded_url_parts = (
+                "/search",
+                "/zoeken",
+                "/zoek/",
+                "/account",
+                "/cart",
+                "/basket",
+                "/winkelwagen",
+                "/checkout",
+                "/login",
+                "/register",
+                "/wishlist",
+            )
 
-            if "html" not in content_type:
-                failed.append(source["name"])
-                continue
+            digital_terms = (
+                "digital download",
+                "mp3 download",
+                "streaming only",
+                "digital album",
+                "download code",
+                "instant download",
+            )
 
-            soup = BeautifulSoup(response.text, "html.parser")
+            seen_urls = set()
+            failed = []
+            found = 0
 
-            # First try structured Product data (JSON-LD).
-            for script in soup.find_all(
-                "script", attrs={"type": "application/ld+json"}
-            ):
-                raw_json = script.string or script.get_text(
-                    strip=True
+            def normalize(text):
+                return " ".join((text or "").casefold().split())
+        
+            def matches_terms(text):
+                normalized = normalize(text)
+                return bool(normalized) and all(
+                    term in normalized for term in terms
                 )
-
-                if not raw_json:
+        
+            def is_action(text):
+                normalized = normalize(text)
+                return any(term in normalized for term in action_terms)
+        
+            def is_digital(text):
+                normalized = normalize(text)
+                return any(term in normalized for term in digital_terms)
+        
+            def add_product(source_name, product_title, product_url):
+                nonlocal found
+        
+                product_title = " ".join((product_title or "").split())
+                product_url = (product_url or "").strip()
+        
+                if len(product_title) < 5:
+                    return
+        
+                if is_action(product_title) or is_digital(product_title):
+                    return
+        
+                if not matches_terms(product_title):
+                    return
+        
+                if not valid_http_url(product_url):
+                    return
+        
+                normalized_url = product_url.rstrip("/").casefold()
+        
+                if normalized_url in seen_urls:
+                    return
+        
+                seen_urls.add(normalized_url)
+        
+                row = self.product_table.rowCount()
+                self.product_table.insertRow(row)
+        
+                self.product_table.setItem(
+                    row, 0, QTableWidgetItem(source_name)
+                )
+                self.product_table.setItem(
+                    row, 1, QTableWidgetItem(product_title)
+                )
+        
+                open_btn = QPushButton("Open Product")
+                open_btn.clicked.connect(
+                    lambda checked=False, target=product_url:
+                        webbrowser.open(target)
+                )
+                self.product_table.setCellWidget(row, 2, open_btn)
+        
+                found += 1
+        
+            for source in sources:
+                url = build_search_url(
+                    source["url_template"],
+                    parts["query"],
+                    parts.get("artist", ""),
+                    parts.get("title", ""),
+                    parts.get("album", ""),
+                    parts.get("year", ""),
+                    parts.get("format", ""),
+                )
+        
+                if not valid_http_url(url):
+                    failed.append(source["name"])
                     continue
-
+        
                 try:
-                    import json
-                    data = json.loads(raw_json)
-                except (ValueError, TypeError):
-                    continue
-
-                def process_jsonld(obj):
-                    if isinstance(obj, list):
-                        for child in obj:
-                            process_jsonld(child)
-                        return
-
-                    if not isinstance(obj, dict):
-                        return
-
-                    graph = obj.get("@graph")
-                    if isinstance(graph, list):
-                        process_jsonld(graph)
-
-                    obj_type = obj.get("@type", "")
-                    if isinstance(obj_type, list):
-                        types = obj_type
-                    else:
-                        types = [obj_type]
-
-                    if any(
-                        str(item).casefold() == "product"
-                        for item in types
+                    response = requests.get(
+                        url,
+                        timeout=20,
+                        headers={
+                            "User-Agent": (
+                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/131.0.0.0 Safari/537.36"
+                            ),
+                            "Accept": (
+                                "text/html,application/xhtml+xml,"
+                                "application/ld+json;q=0.9,*/*;q=0.8"
+                            ),
+                            "Accept-Language": "en-US,en;q=0.9,nl;q=0.8",
+                        },
+                    )
+                    response.raise_for_status()
+        
+                    content_type = response.headers.get(
+                        "Content-Type", ""
+                    ).casefold()
+        
+                    if "html" not in content_type:
+                        failed.append(source["name"])
+                        continue
+        
+                    soup = BeautifulSoup(response.text, "html.parser")
+        
+                    # First try structured Product data (JSON-LD).
+                    for script in soup.find_all(
+                        "script", attrs={"type": "application/ld+json"}
                     ):
-                        name = obj.get("name", "")
-                        product_url = obj.get("url", "")
-
-                        if not product_url:
-                            product_url = obj.get("@id", "")
-
-                        if isinstance(product_url, str):
-                            product_url = urljoin(url, product_url)
-                        else:
-                            product_url = ""
-
-                        # A Product name alone is insufficient:
-                        # require the requested terms in the name.
+                        raw_json = script.string or script.get_text(
+                            strip=True
+                        )
+        
+                        if not raw_json:
+                            continue
+        
+                        try:
+                            import json
+                            data = json.loads(raw_json)
+                        except (ValueError, TypeError):
+                            continue
+        
+                        def process_jsonld(obj):
+                            if isinstance(obj, list):
+                                for child in obj:
+                                    process_jsonld(child)
+                                return
+        
+                            if not isinstance(obj, dict):
+                                return
+        
+                            graph = obj.get("@graph")
+                            if isinstance(graph, list):
+                                process_jsonld(graph)
+        
+                            obj_type = obj.get("@type", "")
+                            if isinstance(obj_type, list):
+                                types = obj_type
+                            else:
+                                types = [obj_type]
+        
+                            if any(
+                                str(item).casefold() == "product"
+                                for item in types
+                            ):
+                                name = obj.get("name", "")
+                                product_url = obj.get("url", "")
+        
+                                if not product_url:
+                                    product_url = obj.get("@id", "")
+        
+                                if isinstance(product_url, str):
+                                    product_url = urljoin(url, product_url)
+                                else:
+                                    product_url = ""
+        
+                                # A Product name alone is insufficient:
+                                # require the requested terms in the name.
+                                add_product(
+                                    source["name"],
+                                    name if isinstance(name, str) else "",
+                                    product_url,
+                                )
+        
+                            # Also inspect nested structures such as ItemList.
+                            for key, value in obj.items():
+                                if key not in ("@graph",):
+                                    if isinstance(value, (dict, list)):
+                                        process_jsonld(value)
+        
+                        process_jsonld(data)
+        
+                    # HTML fallback for sites without usable JSON-LD.
+                    for link in soup.find_all("a", href=True):
+                        title_text = " ".join(link.stripped_strings).strip()
+        
+                        if len(title_text) < 8:
+                            continue
+        
+                        if is_action(title_text):
+                            continue
+        
+                        product_url = urljoin(url, link["href"])
+        
+                        if not valid_http_url(product_url):
+                            continue
+        
+                        parsed = urlparse(product_url)
+                        if parsed.scheme not in ("http", "https"):
+                            continue
+        
+                        if any(
+                            part in parsed.path.casefold()
+                            for part in excluded_url_parts
+                        ):
+                            continue
+        
+                        if product_url.rstrip("/") == url.rstrip("/"):
+                            continue
+        
+                        # Use only the link's own title here, not the entire
+                        # surrounding page, to avoid unrelated matches.
+                        if not matches_terms(title_text):
+                            continue
+        
+                        if is_digital(title_text):
+                            continue
+        
                         add_product(
                             source["name"],
-                            name if isinstance(name, str) else "",
+                            title_text,
                             product_url,
                         )
-
-                    # Also inspect nested structures such as ItemList.
-                    for key, value in obj.items():
-                        if key not in ("@graph",):
-                            if isinstance(value, (dict, list)):
-                                process_jsonld(value)
-
-                process_jsonld(data)
-
-            # HTML fallback for sites without usable JSON-LD.
-            for link in soup.find_all("a", href=True):
-                title_text = " ".join(link.stripped_strings).strip()
-
-                if len(title_text) < 8:
-                    continue
-
-                if is_action(title_text):
-                    continue
-
-                product_url = urljoin(url, link["href"])
-
-                if not valid_http_url(product_url):
-                    continue
-
-                parsed = urlparse(product_url)
-                if parsed.scheme not in ("http", "https"):
-                    continue
-
-                if any(
-                    part in parsed.path.casefold()
-                    for part in excluded_url_parts
-                ):
-                    continue
-
-                if product_url.rstrip("/") == url.rstrip("/"):
-                    continue
-
-                # Use only the link's own title here, not the entire
-                # surrounding page, to avoid unrelated matches.
-                if not matches_terms(title_text):
-                    continue
-
-                if is_digital(title_text):
-                    continue
-
-                add_product(
-                    source["name"],
-                    title_text,
-                    product_url,
+        
+                except requests.RequestException:
+                    failed.append(source["name"])
+        
+            self.statusBar().showMessage(
+                f"Found {found} possible product results."
+            )
+        
+            if failed:
+                QMessageBox.information(
+                    self,
+                    "Some stores could not be searched",
+                    "Automatic retrieval failed for:\n"
+                    + "\n".join(failed)
+                    + "\n\nSome stores may block automated requests "
+                      "or require JavaScript.",
+                )
+        
+            if found == 0:
+                QMessageBox.information(
+                    self,
+                    "No matching products",
+                    "No matching product links were identified. "
+                    "Try a more specific or shorter search query. "
+                    "This does not prove that the stores have no stock.",
                 )
 
-        except requests.RequestException:
-            failed.append(source["name"])
-
-    self.statusBar().showMessage(
-        f"Found {found} possible product results."
-    )
-
-    if failed:
-        QMessageBox.information(
-            self,
-            "Some stores could not be searched",
-            "Automatic retrieval failed for:\n"
-            + "\n".join(failed)
-            + "\n\nSome stores may block automated requests "
-              "or require JavaScript.",
-        )
-
-    if found == 0:
-        QMessageBox.information(
-            self,
-            "No matching products",
-            "No matching product links were identified. "
-            "Try a more specific or shorter search query. "
-            "This does not prove that the stores have no stock.",
-        )
-#------------------------------------------------------
     
     def clear_filters(self):
         for widget in (
