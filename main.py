@@ -312,8 +312,8 @@ class VinylFinder(QMainWindow):
         super().__init__()
 
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
-        self.resize(1120, 760)
         self.setMinimumSize(850, 560)
+        self.showMaximized()
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.create_search_tab(), "Search Records")
@@ -1468,7 +1468,7 @@ def main():
     app.setStyle("Fusion")
 
     window = VinylFinder()
-    window.show()
+    window.showMaximized()
 
     sys.exit(app.exec())
 
