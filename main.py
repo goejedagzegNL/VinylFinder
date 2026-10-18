@@ -477,6 +477,9 @@ class VinylFinder(QMainWindow):
   
     def search_sources(self):
         parts = self.current_query_parts()
+        
+        self.results_table.show()
+        self.product_table.hide()
 
         if not parts["query"]:
             QMessageBox.information(
@@ -697,18 +700,30 @@ class VinylFinder(QMainWindow):
                 "This does not prove that the stores have no stock.",
             )
             
-    def clear_filters(self):
+     def clear_filters(self):
         for widget in (
-            self.artist_edit, self.album_edit, self.label_edit,
-            self.catalog_edit, self.year_edit
+            self.artist_edit,
+            self.title_edit,
+            self.album_edit,
+            self.label_edit,
+            self.catalog_edit,
+            self.year_edit,
         ):
             widget.clear()
+
         self.format_combo.setCurrentIndex(0)
         self.condition_combo.setCurrentIndex(0)
         self.min_price.setValue(0)
         self.max_price.setValue(100000)
-        self.results_table.setRowCount(0)
 
+        self.results_table.setRowCount(0)
+        self.product_table.setRowCount(0)
+
+        self.results_table.show()
+        self.product_table.hide()
+
+        self.statusBar().showMessage("Filters cleared.")
+         
     def selected_source_id(self):
         row = self.sources_table.currentRow()
         if row < 0:
