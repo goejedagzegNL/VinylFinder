@@ -79,25 +79,34 @@ def valid_http_url(url):
         return False
 
 
-def build_search_url(template, query, artist, album, year, record_format):
+
+def build_search_url(
+    template, query, artist, title, album, year, record_format
+):
     """Build a URL from a source template.
 
     Supported placeholders:
-    {query}, {artist}, {album}, {year}, {format}, {query_params}
+    {query}, {artist}, {title}, {album}, {year}, {format}, {query_params}
     """
+    from urllib.parse import quote_plus, urlencode
+
     values = {
-        "query": quote_plus(query),
-        "artist": quote_plus(artist),
-        "album": quote_plus(album),
-        "year": quote_plus(year),
-        "format": quote_plus(record_format),
-        "query_params": urlencode({"q": query}),
+        "query": quote_plus(query.strip()),
+        "artist": quote_plus(artist.strip()),
+        "title": quote_plus(title.strip()),
+        "album": quote_plus(album.strip()),
+        "year": quote_plus(year.strip()),
+        "format": quote_plus(record_format.strip()),
+        "query_params": urlencode({"q": query.strip()}),
     }
+
     try:
-        return template.format(**values)
+        url = template.format(**values)
+        if not url.startswith(("https://", "http://")):
+            return ""
+        return url
     except (KeyError, ValueError):
         return ""
-
 
 class SourceDialog(QDialog):
     def __init__(self, parent=None, source=None):
