@@ -70,9 +70,12 @@ def init_db():
         count = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
         if count == 0:
             conn.executemany(
-                "INSERT INTO sources (name, url_template, enabled) VALUES (?, ?, ?)",
+                """
+                INSERT INTO sources (name, url_template, enabled)
+                VALUES (?, ?, ?)
+                """,
                 DEFAULT_SOURCES,
-)
+            )
 
 
 def valid_http_url(url):
@@ -612,11 +615,46 @@ class VinylFinder(QMainWindow):
                 soup = BeautifulSoup(response.text, "html.parser")
 
                 for link in soup.find_all("a", href=True):
+                    
                     title_text = " ".join(link.stripped_strings).strip()
 
+                    # Negeer lege links en teksten die geen productnamen zijn.
                     if len(title_text) < 5:
-                        continue
+                         continue
+                      
+                    # Negeer veelvoorkomende website-acties en navigatielinks.
+                    action_terms = (
+                        "toevoegen aan winkelwagen",
+                        "in winkelwagen",
+                        "winkelwagen",
+                        "add to cart",
+                        "add to bag",
+                        "buy now",
+                        "shop now",
+                        "checkout",
+                        "view cart",
+                        "view basket",
+                        "naar de kassa",
+                        "bestellen",
+                        "afrekenen",
+                        "verder winkelen",
+                        "login",
+                        "log in",
+                        "sign in",
+                        "register",
+                        "account",
+                        "search",
+                        "zoeken",
+                        "volgende",
+                        "previous",
+                        "next page",
+                    )
 
+                    normalized_title = title_text.casefold().strip()
+
+                    if any(term in normalized_title for term in action_terms):
+                        continue
+                    
                     parent = link.parent
                     context = (
                         parent.get_text(" ", strip=True)
@@ -660,11 +698,17 @@ class VinylFinder(QMainWindow):
                     self.product_table.setItem(
                         row, 1, QTableWidgetItem(title_text)
                     )
-
                     price_match = re.search(
-                        r"€\s?\d+(?:[.,]\d{2})?",
+                        r"(?:€\s*|EUR\s*|USD\s*|\$\s*|£\s*)"
+                        r"\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?"
+                        r"|"
+                        r"\d+(?:[.,]\d{2})?\s*(?:EUR|USD)",
                         context,
+                        re.IGNORECASE,
                     )
+
+                    price = price_match.group(0).strip() if price_match else "Unknown"
+
                     price = (
                         price_match.group(0)
                         if price_match else "Unknown"
