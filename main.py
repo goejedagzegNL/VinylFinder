@@ -260,6 +260,7 @@ class VinylFinder(QMainWindow):
         
         search_btn = QPushButton("Search Enabled Sources")
         search_btn.clicked.connect(self.search_sources)
+        
         products_btn = QPushButton("Search Products")
         products_btn.clicked.connect(self.search_products)
         
@@ -542,23 +543,23 @@ class VinylFinder(QMainWindow):
         
     def search_products(self):
         parts = self.current_query_parts()
-        self.results_table.hide()
-        self.product_table.show()
-        self.product_table.setRowCount(0)
 
-        if not any(parts.get(key, "").strip()
-                   for key in ("artist", "title", "album")):
+        if not any(
+            parts.get(key, "").strip()
+            for key in ("artist", "title", "album")
+        ):
             QMessageBox.information(
                 self,
                 "Search Products",
                 "Enter an artist, title or album first.",
             )
             return
-
+         
         self.results_table.hide()
         self.product_table.show()
         self.product_table.setRowCount(0)
         self.statusBar().showMessage("Searching enabled stores...")
+        QApplication.processEvents()
 
         with connect_db() as conn:
             sources = conn.execute(
