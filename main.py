@@ -307,7 +307,7 @@ class VinylFinder(QMainWindow):
             "Website / Store",
             "Product",
             "Price",
-            "Product Link",
+            "Action",
         ])
         self.product_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -534,7 +534,6 @@ class VinylFinder(QMainWindow):
         )
 
         
-
     def search_products(self):
         parts = self.current_query_parts()
 
@@ -547,6 +546,8 @@ class VinylFinder(QMainWindow):
             )
             return
 
+        self.results_table.hide()
+        self.product_table.show()
         self.product_table.setRowCount(0)
         self.statusBar().showMessage("Searching enabled stores...")
 
@@ -662,11 +663,16 @@ class VinylFinder(QMainWindow):
                         row, 2, QTableWidgetItem(price)
                     )
 
-                    url_item = QTableWidgetItem(product_url)
-                    url_item.setToolTip(product_url)
-                    self.product_table.setItem(row, 3, url_item)
+                    
+                    open_btn = QPushButton("Open Product")
+                    open_btn.clicked.connect(
+                        lambda checked=False, target=product_url:
+                            webbrowser.open(target)
+                    )
+                    self.product_table.setCellWidget(row, 3, open_btn)
                     found += 1
-
+            
+            
             except requests.RequestException:
                 failed.append(source["name"])
 
@@ -690,6 +696,7 @@ class VinylFinder(QMainWindow):
                 "No matching product links were identified. "
                 "This does not prove that the stores have no stock.",
             )
+            
     def clear_filters(self):
         for widget in (
             self.artist_edit, self.album_edit, self.label_edit,
