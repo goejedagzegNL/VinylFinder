@@ -23,12 +23,12 @@ DATA_DIR = Path.home() / "AppData" / "Local" / "VinylFinder"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "vinylfinder.db"
 
-DEFAULT_SOURCES = [
-    ("Discogs", "https://www.discogs.com/search/?{query_params}", "query"),
-    ("eBay", "https://www.ebay.com/sch/i.html?{query_params}", "query"),
-    ("Bandcamp", "https://bandcamp.com/search?q={query}", "query"),
-]
 
+DEFAULT_SOURCES = [
+    ("Discogs", "https://www.discogs.com/search/?{query_params}", 1),
+    ("eBay", "https://www.ebay.com/sch/i.html?{query_params}", 1),
+    ("Bandcamp", "https://bandcamp.com/search?q={query}", 1),
+]
 
 def connect_db():
     conn = sqlite3.connect(DB_PATH)
@@ -66,9 +66,9 @@ def init_db():
         count = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
         if count == 0:
             conn.executemany(
-                "INSERT INTO sources (name, url_template, enabled) VALUES (?, ?, 1)",
+                "INSERT INTO sources (name, url_template, enabled) VALUES (?, ?, ?)",
                 DEFAULT_SOURCES,
-            )
+)
 
 
 def valid_http_url(url):
