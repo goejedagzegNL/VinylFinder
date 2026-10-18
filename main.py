@@ -1,6 +1,7 @@
 
 import sys
 import sqlite3
+import csv
 import webbrowser
 from pathlib import Path
 from urllib.parse import quote_plus, urlencode, urlparse
@@ -12,7 +13,7 @@ from PySide6.QtWidgets import (
     QFormLayout, QLineEdit, QComboBox, QDoubleSpinBox, QPushButton,
     QTableWidget, QTableWidgetItem, QTabWidget, QMessageBox, QDialog,
     QDialogButtonBox, QCheckBox, QLabel, QHeaderView, QAbstractItemView,
-    QSplitter
+    QSplitter, QFileDialog
 )
 
 APP_NAME = "VinylFinder"
@@ -315,20 +316,27 @@ class VinylFinder(QMainWindow):
         layout.addWidget(self.sources_table)
 
         buttons = QHBoxLayout()
+
         add_btn = QPushButton("Add Source")
         edit_btn = QPushButton("Edit Selected")
         toggle_btn = QPushButton("Enable / Disable")
         delete_btn = QPushButton("Delete Selected")
+        import_btn = QPushButton("Import CSV")
         refresh_btn = QPushButton("Refresh")
 
         add_btn.clicked.connect(self.add_source)
         edit_btn.clicked.connect(self.edit_source)
         toggle_btn.clicked.connect(self.toggle_source)
         delete_btn.clicked.connect(self.delete_source)
+        import_btn.clicked.connect(self.import_sources_csv)
         refresh_btn.clicked.connect(self.refresh_sources)
 
-        for button in (add_btn, edit_btn, toggle_btn, delete_btn, refresh_btn):
+        for button in (
+            add_btn, edit_btn, toggle_btn, delete_btn,
+            import_btn, refresh_btn
+        ):
             buttons.addWidget(button)
+
         layout.addLayout(buttons)
         return page
 
@@ -528,6 +536,144 @@ class VinylFinder(QMainWindow):
                 )
             )
 
+
+    def import_sources_csv(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Sources from CSV",
+            "",
+            "CSV files (*.csv);;All files (*.*)",
+        )
+
+        if not file_path:
+            return
+
+        imported = 0
+        skipped = 0
+        invalid = 0
+
+        try:
+            with open(
+                file_path,
+                "r",
+                encoding="utf-8-sig",
+                newline="",
+            ) as csv_file:
+                sample = csv_file.read(4096)
+                csv_file.seek(0)
+
+                try:
+                    dialect = csv.Sniffer().sniff(
+                        sample, delimiters=",;\t"
+                    )
+                except csv.Error:
+                    dialect = csv.excel
+
+                reader = csv.DictReader(csv_file, dialect=dialect)
+
+                if not reader.fieldnames:
+                    QMessageBox.warning(
+                        self,
+                        "CSV Import",
+                        "The CSV file is empty or has no header row.",
+                    )
+                    return
+
+                reader.fieldnames = [
+                    (name or "").strip().lower()
+                    for name in reader.fieldnames
+                ]
+
+                required = {"name", "url_template"}
+                if not required.issubset(set(reader.fieldnames)):
+                    QMessageBox.warning(
+                        self,
+                        "CSV Import",
+                        "Required columns: name, url_template. "
+                        "Optional column: enabled.",
+                    )
+                    return
+
+                with connect_db() as conn:
+                    for row in reader:
+                        name = (row.get("name") or "").strip()
+                        template = (
+                            row.get("url_template") or ""
+                        ).strip()
+
+                        enabled_text = (
+                            row.get("enabled") or "1"
+                        ).strip().lower()
+
+                        if not name or not template:
+                            invalid += 1
+                            continue
+
+                        test_url = template
+                        for placeholder, replacement in (
+                            ("{query}", "test"),
+                            ("{artist}", "artist"),
+                            ("{title}", "title"),
+                            ("{album}", "album"),
+                            ("{year}", "2020"),
+                            ("{format}", "vinyl"),
+                            ("{query_params}", "q=test"),
+                        ):
+                            test_url = test_url.replace(
+                                placeholder, replacement
+                            )
+
+                        if not valid_http_url(test_url):
+                            invalid += 1
+                            continue
+
+                        if enabled_text in (
+                            "1", "true", "yes", "enabled"
+                        ):
+                            enabled = 1
+                        elif enabled_text in (
+                            "0", "false", "no", "disabled"
+                        ):
+                            enabled = 0
+                        else:
+                            invalid += 1
+                            continue
+
+                        exists = conn.execute(
+                            "SELECT 1 FROM sources "
+                            "WHERE lower(name) = lower(?)",
+                            (name,),
+                        ).fetchone()
+
+                        if exists:
+                            skipped += 1
+                            continue
+
+                        conn.execute(
+                            "INSERT INTO sources "
+                            "(name, url_template, enabled) "
+                            "VALUES (?, ?, ?)",
+                            (name, template, enabled),
+                        )
+                        imported += 1
+
+            self.refresh_sources()
+
+            QMessageBox.information(
+                self,
+                "CSV Import Complete",
+                f"Imported: {imported}\n"
+                f"Skipped (duplicate names): {skipped}\n"
+                f"Invalid rows: {invalid}",
+            )
+
+        except (OSError, csv.Error, UnicodeError) as exc:
+            QMessageBox.critical(
+                self,
+                "CSV Import Failed",
+                f"Could not import the CSV file:\n{exc}",
+            )
+    
     def add_source(self):
         dialog = SourceDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
