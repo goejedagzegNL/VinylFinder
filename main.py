@@ -196,6 +196,7 @@ class VinylFinder(QMainWindow):
 
         form = QFormLayout()
         self.artist_edit = QLineEdit()
+        self.title_edit = QLineEdit()
         self.album_edit = QLineEdit()
         self.label_edit = QLineEdit()
         self.catalog_edit = QLineEdit()
@@ -221,8 +222,9 @@ class VinylFinder(QMainWindow):
         self.max_price.setRange(0, 100000)
         self.max_price.setValue(100000)
         self.max_price.setPrefix("€ ")
-
+        
         form.addRow("Artist:", self.artist_edit)
+        form.addRow("Title:", self.title_edit)
         form.addRow("Album:", self.album_edit)
         form.addRow("Record label:", self.label_edit)
         form.addRow("Catalog number:", self.catalog_edit)
@@ -374,29 +376,40 @@ class VinylFinder(QMainWindow):
         layout.addLayout(buttons)
         return page
 
+   
     def current_query_parts(self):
         artist = self.artist_edit.text().strip()
+        title = self.title_edit.text().strip()
         album = self.album_edit.text().strip()
         label = self.label_edit.text().strip()
         catalog = self.catalog_edit.text().strip()
         year = self.year_edit.text().strip()
 
-        terms = [artist, album, label, catalog, year]
+        terms = [artist, title, album, label, catalog, year]
         terms = [term for term in terms if term]
+
         record_format = self.format_combo.currentText()
         condition = self.condition_combo.currentText()
 
         if record_format != "Any vinyl format":
             terms.append(record_format)
+
         if condition != "Any condition":
             terms.append(condition)
+
         if self.min_price.value() > 0:
-            terms.append(f"minimum price {self.min_price.value():.2f} EUR")
+            terms.append(
+                f"minimum price {self.min_price.value():.2f} EUR"
+            )
+
         if self.max_price.value() < 100000:
-            terms.append(f"maximum price {self.max_price.value():.2f} EUR")
+            terms.append(
+                f"maximum price {self.max_price.value():.2f} EUR"
+            )
 
         return {
             "artist": artist,
+            "title": title,
             "album": album,
             "label": label,
             "catalog": catalog,
@@ -404,12 +417,13 @@ class VinylFinder(QMainWindow):
             "format": record_format,
             "query": " ".join(terms),
         }
-
+  
     def search_sources(self):
         parts = self.current_query_parts()
+
         if not parts["query"]:
             QMessageBox.information(
-                self, "Search", "Enter at least an artist or album."
+                self, "Search", "Enter at least an artist or title."
             )
             return
 
@@ -425,23 +439,28 @@ class VinylFinder(QMainWindow):
             ).fetchall()
 
         self.results_table.setRowCount(0)
+
         for source in sources:
             url = build_search_url(
                 source["url_template"],
                 parts["query"],
                 parts["artist"],
+                parts["title"],
                 parts["album"],
                 parts["year"],
                 parts["format"],
             )
+
             if not valid_http_url(url):
                 continue
 
             row = self.results_table.rowCount()
             self.results_table.insertRow(row)
+
             self.results_table.setItem(
                 row, 0, QTableWidgetItem(source["name"])
             )
+
             url_item = QTableWidgetItem(url)
             url_item.setToolTip(url)
             self.results_table.setItem(row, 1, url_item)
