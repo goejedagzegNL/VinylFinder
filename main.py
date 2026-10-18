@@ -544,110 +544,110 @@ class VinylFinder(QMainWindow):
         )
 
 
-        def search_products(self):
-            parts = self.current_query_parts()
+            def search_products(self):
+                parts = self.current_query_parts()
 
-        if not any(
-            parts.get(key, "").strip()
-            for key in ("artist", "title", "album")
-            ):
-                
-            QMessageBox.information(
-                self,
-                "Search Products",
-                "Enter an artist, title or album first.",
-            )
-            return
-
-            # Show only the product results.
-            self.results_table.hide()
-            self.product_table.show()
-            self.product_table.setRowCount(0)
-
-            # Three columns: store, product and action.
-            self.product_table.setColumnCount(3)
-            self.product_table.setHorizontalHeaderLabels(
-                ["Website / Store", "Product", "Action"]
-            )
-            self.product_table.horizontalHeader().setSectionResizeMode(
-                0, QHeaderView.ResizeMode.ResizeToContents
-            )
-            self.product_table.horizontalHeader().setSectionResizeMode(
-                1, QHeaderView.ResizeMode.Stretch
-            )
-            self.product_table.horizontalHeader().setSectionResizeMode(
-                2, QHeaderView.ResizeMode.ResizeToContents
-            )
-            self.statusBar().showMessage("Searching enabled stores...")
-            QApplication.processEvents()
-
-            with connect_db() as conn:
-                sources = conn.execute(
-                    "SELECT * FROM sources WHERE enabled = 1 ORDER BY name"
-                ).fetchall()
-
-            # Use the artist, title and album as the main search terms.
-            terms = [
-                parts.get(key, "").strip().casefold()
+            if not any(
+                parts.get(key, "").strip()
                 for key in ("artist", "title", "album")
-                if parts.get(key, "").strip()
-    ]
+                ):
+                
+                QMessageBox.information(
+                    self,
+                    "Search Products",
+                    "Enter an artist, title or album first.",
+                )
+                return
 
-            action_terms = (
-                "toevoegen aan winkelwagen",
-                "in winkelwagen",
-                "winkelwagen",
-                "add to cart",
-                "add to bag",
-                "buy now",
-                "shop now",
-                "checkout",
-                "view cart",
-                "view basket",
-                "naar de kassa",
-                "bestellen",
-                "afrekenen",
-                "verder winkelen",
-                "login",
-                "log in",
-                "sign in",
-                "register",
-                "account",
-                "search",
-                "zoeken",
-                "volgende",
-                "previous",
-                "next page",
-                "add to wishlist",
-                "toevoegen aan verlanglijst",
-            )
-
-            excluded_url_parts = (
-                "/search",
-                "/zoeken",
-                "/zoek/",
-                "/account",
-                "/cart",
-                "/basket",
-                "/winkelwagen",
-                "/checkout",
-                "/login",
-                "/register",
-                "/wishlist",
-            )
-
-            digital_terms = (
-                "digital download",
-                "mp3 download",
-                "streaming only",
-                "digital album",
-                "download code",
-                "instant download",
-            )
-
-            seen_urls = set()
-            failed = []
-            found = 0
+                # Show only the product results.
+                self.results_table.hide()
+                self.product_table.show()
+                self.product_table.setRowCount(0)
+    
+                # Three columns: store, product and action.
+                self.product_table.setColumnCount(3)
+                self.product_table.setHorizontalHeaderLabels(
+                    ["Website / Store", "Product", "Action"]
+                )
+                self.product_table.horizontalHeader().setSectionResizeMode(
+                    0, QHeaderView.ResizeMode.ResizeToContents
+                )
+                self.product_table.horizontalHeader().setSectionResizeMode(
+                    1, QHeaderView.ResizeMode.Stretch
+                )
+                self.product_table.horizontalHeader().setSectionResizeMode(
+                    2, QHeaderView.ResizeMode.ResizeToContents
+                )
+                self.statusBar().showMessage("Searching enabled stores...")
+                QApplication.processEvents()
+    
+                with connect_db() as conn:
+                    sources = conn.execute(
+                        "SELECT * FROM sources WHERE enabled = 1 ORDER BY name"
+                    ).fetchall()
+    
+                # Use the artist, title and album as the main search terms.
+                terms = [
+                    parts.get(key, "").strip().casefold()
+                    for key in ("artist", "title", "album")
+                    if parts.get(key, "").strip()
+        ]
+    
+                action_terms = (
+                    "toevoegen aan winkelwagen",
+                    "in winkelwagen",
+                    "winkelwagen",
+                    "add to cart",
+                    "add to bag",
+                    "buy now",
+                    "shop now",
+                    "checkout",
+                    "view cart",
+                    "view basket",
+                    "naar de kassa",
+                    "bestellen",
+                    "afrekenen",
+                    "verder winkelen",
+                    "login",
+                    "log in",
+                    "sign in",
+                    "register",
+                    "account",
+                    "search",
+                    "zoeken",
+                    "volgende",
+                    "previous",
+                    "next page",
+                    "add to wishlist",
+                    "toevoegen aan verlanglijst",
+                )
+    
+                excluded_url_parts = (
+                    "/search",
+                    "/zoeken",
+                    "/zoek/",
+                    "/account",
+                    "/cart",
+                    "/basket",
+                    "/winkelwagen",
+                    "/checkout",
+                    "/login",
+                    "/register",
+                    "/wishlist",
+                )
+    
+                digital_terms = (
+                    "digital download",
+                    "mp3 download",
+                    "streaming only",
+                    "digital album",
+                    "download code",
+                    "instant download",
+                )
+    
+                seen_urls = set()
+                failed = []
+                found = 0
 
             def normalize(text):
                 return " ".join((text or "").casefold().split())
