@@ -2,10 +2,13 @@
 import sys
 import sqlite3
 import csv
+import requests
 import webbrowser
+import re
 from pathlib import Path
-from urllib.parse import quote_plus, urlencode, urlparse
+from urllib.parse import quote_plus, urlencode, urlparse, urljoin
 from datetime import datetime
+from bs4 import BeautifulSoup
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -491,6 +494,15 @@ class VinylFinder(QMainWindow):
         self.refresh_history()
         self.statusBar().showMessage(
             f"Prepared {self.results_table.rowCount()} search destinations."
+        )
+
+        
+    def search_products(self):
+        QMessageBox.information(
+            self,
+            "Search Products",
+            "The product search function is connected. "
+            "Automatic product retrieval will be added next.",
         )
 
     def clear_filters(self):
