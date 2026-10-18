@@ -700,7 +700,7 @@ class VinylFinder(QMainWindow):
                 "This does not prove that the stores have no stock.",
             )
             
-     def clear_filters(self):
+    def clear_filters(self):
         for widget in (
             self.artist_edit,
             self.title_edit,
@@ -721,7 +721,6 @@ class VinylFinder(QMainWindow):
 
         self.results_table.show()
         self.product_table.hide()
-
         self.statusBar().showMessage("Filters cleared.")
          
     def selected_source_id(self):
