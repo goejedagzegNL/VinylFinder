@@ -259,10 +259,14 @@ class VinylFinder(QMainWindow):
         buttons = QHBoxLayout()
         search_btn = QPushButton("Search Enabled Sources")
         search_btn.clicked.connect(self.search_sources)
+        products_btn = QPushButton("Search Products")
+        products_btn.clicked.connect(self.search_products)
         clear_btn = QPushButton("Clear Filters")
         clear_btn.clicked.connect(self.clear_filters)
         buttons.addWidget(search_btn)
+        buttons.addWidget(products_btn)
         buttons.addWidget(clear_btn)
+
         layout.addLayout(buttons)
 
         layout.addWidget(QLabel(
