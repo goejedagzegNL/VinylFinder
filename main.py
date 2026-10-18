@@ -257,24 +257,28 @@ class VinylFinder(QMainWindow):
         layout.addLayout(form)
 
         buttons = QHBoxLayout()
+        
         search_btn = QPushButton("Search Enabled Sources")
         search_btn.clicked.connect(self.search_sources)
         products_btn = QPushButton("Search Products")
         products_btn.clicked.connect(self.search_products)
+        
         clear_btn = QPushButton("Clear Filters")
         clear_btn.clicked.connect(self.clear_filters)
+        
         buttons.addWidget(search_btn)
         buttons.addWidget(products_btn)
         buttons.addWidget(clear_btn)
 
         layout.addLayout(buttons)
 
+
         layout.addWidget(QLabel(
-            "Search destinations are shown below. Opening a destination "
-            "performs the search on that website; this version does not "
-            "yet import or verify individual listings automatically."
+            "Search Enabled Sources opens store search pages. "
+            "Search Products attempts to retrieve matching product listings."
         ))
 
+        
         self.results_table = QTableWidget(0, 3)
         self.results_table.setHorizontalHeaderLabels(
             ["Website / Store", "Search URL", "Action"]
@@ -295,6 +299,35 @@ class VinylFinder(QMainWindow):
             2, QHeaderView.ResizeMode.ResizeToContents
         )
         layout.addWidget(self.results_table, 1)
+        
+        layout.addWidget(QLabel("Found Products"))
+
+        self.product_table = QTableWidget(0, 4)
+        self.product_table.setHorizontalHeaderLabels([
+            "Website / Store",
+            "Product",
+            "Price",
+            "Product Link",
+        ])
+        self.product_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.product_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.product_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.product_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self.product_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.product_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.Stretch
+        )
+        layout.addWidget(self.product_table, 1)
         return page
 
     def create_sources_tab(self):
