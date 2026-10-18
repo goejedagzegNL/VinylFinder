@@ -328,6 +328,9 @@ class VinylFinder(QMainWindow):
             3, QHeaderView.ResizeMode.Stretch
         )
         layout.addWidget(self.product_table, 1)
+        self.results_table.show()
+        self.product_table.hide()
+        
         return page
 
     def create_sources_tab(self):
@@ -477,10 +480,10 @@ class VinylFinder(QMainWindow):
   
     def search_sources(self):
         parts = self.current_query_parts()
-        
-        self.results_table.show()
         self.product_table.hide()
-
+        self.results_table.show()
+        self.results_table.setRowCount(0)
+        
         if not parts["query"]:
             QMessageBox.information(
                 self, "Search", "Enter at least an artist or title."
@@ -539,6 +542,9 @@ class VinylFinder(QMainWindow):
         
     def search_products(self):
         parts = self.current_query_parts()
+        self.results_table.hide()
+        self.product_table.show()
+        self.product_table.setRowCount(0)
 
         if not any(parts.get(key, "").strip()
                    for key in ("artist", "title", "album")):
@@ -699,7 +705,9 @@ class VinylFinder(QMainWindow):
                 "No matching product links were identified. "
                 "This does not prove that the stores have no stock.",
             )
-            
+
+
+    
     def clear_filters(self):
         for widget in (
             self.artist_edit,
@@ -721,6 +729,7 @@ class VinylFinder(QMainWindow):
 
         self.results_table.show()
         self.product_table.hide()
+
         self.statusBar().showMessage("Filters cleared.")
          
     def selected_source_id(self):
