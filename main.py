@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "VinylFinder"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 
 DATA_DIR = Path.home() / "AppData" / "Local" / APP_NAME
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -458,6 +458,62 @@ class CountryWebsiteResultsDialog(QDialog):
         self.country = country
         self.setWindowTitle(f"Search Websites — {country}")
         self.resize(1120, 650)
+        # Explicitly apply the application's black/white theme to this popup and
+        # its item-view internals; native Windows palettes can otherwise make
+        # table text or headers difficult to read.
+        self.setStyleSheet("""
+            QDialog, QWidget {
+                background-color: #000000;
+                color: #ffffff;
+            }
+            QLabel {
+                background-color: transparent;
+                color: #ffffff;
+            }
+            QTableWidget, QTableView {
+                background-color: #000000;
+                alternate-background-color: #151515;
+                color: #ffffff;
+                gridline-color: #666666;
+                selection-background-color: #3d5f86;
+                selection-color: #ffffff;
+                border: 1px solid #666666;
+            }
+            QTableWidget::item, QTableView::item {
+                background-color: #000000;
+                color: #ffffff;
+                padding: 4px;
+            }
+            QTableWidget::item:alternate, QTableView::item:alternate {
+                background-color: #151515;
+                color: #ffffff;
+            }
+            QHeaderView::section {
+                background-color: #292929;
+                color: #ffffff;
+                padding: 6px;
+                border: 1px solid #666666;
+                font-weight: bold;
+            }
+            QCheckBox {
+                background-color: transparent;
+                color: #ffffff;
+                spacing: 6px;
+            }
+            QPushButton {
+                background-color: #292929;
+                color: #ffffff;
+                border: 1px solid #777777;
+                border-radius: 3px;
+                padding: 6px 10px;
+            }
+            QPushButton:hover { background-color: #404040; }
+            QPushButton:disabled {
+                background-color: #181818;
+                color: #888888;
+                border-color: #444444;
+            }
+        """)
         layout = QVBoxLayout(self)
         self.info_label = QLabel(
             "Select webshops, then click 'Test / Generate Search URL'. "
