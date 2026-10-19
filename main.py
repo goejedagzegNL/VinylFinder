@@ -1,4 +1,3 @@
-
 import sys
 import sqlite3
 import csv
@@ -18,7 +17,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QFormLayout,
     QLineEdit,
-    QComboBox,
     QDoubleSpinBox,
     QPushButton,
     QTableWidget,
@@ -37,7 +35,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "VinylFinder"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 
 DATA_DIR = Path.home() / "AppData" / "Local" / APP_NAME
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -137,9 +135,8 @@ def build_search_url(
     query,
     artist,
     title,
-    album,
-    year,
-    record_format,
+    label,
+    catalog,
 ):
     query = query.strip()
 
@@ -147,11 +144,13 @@ def build_search_url(
         "query": quote_plus(query),
         "artist": quote_plus(artist.strip()),
         "title": quote_plus(title.strip()),
-        "album": quote_plus(album.strip()),
-        "label": "",
-        "catalog": "",
-        "year": quote_plus(year.strip()),
-        "format": quote_plus(record_format.strip()),
+        "label": quote_plus(label.strip()),
+        "catalog": quote_plus(catalog.strip()),
+        # Legacy placeholders remain empty for compatibility with
+        # existing source templates; these are no longer search fields.
+        "album": "",
+        "year": "",
+        "format": "",
         "query_params": urlencode({"q": query}),
     }
 
@@ -221,8 +220,7 @@ class SourceDialog(QDialog):
 
         layout.addWidget(QLabel(
             "Available placeholders: {query}, {artist}, "
-            "{title}, {album}, {label}, {catalog}, "
-            "{year}, {format}, {query_params}."
+            "{title}, {label}, {catalog}, {query_params}."
         ))
 
         buttons = QDialogButtonBox(
@@ -397,32 +395,8 @@ class VinylFinder(QMainWindow):
 
         self.artist_edit = QLineEdit()
         self.title_edit = QLineEdit()
-        self.album_edit = QLineEdit()
         self.label_edit = QLineEdit()
         self.catalog_edit = QLineEdit()
-        self.year_edit = QLineEdit()
-
-        self.year_edit.setPlaceholderText("e.g. 1977")
-
-        self.format_combo = QComboBox()
-        self.format_combo.addItems([
-            "Any vinyl format",
-            "LP",
-            "7-inch single",
-            "10-inch",
-            "12-inch single",
-            "Box set",
-        ])
-
-        self.condition_combo = QComboBox()
-        self.condition_combo.addItems([
-            "Any condition",
-            "New",
-            "Near Mint",
-            "Very Good Plus",
-            "Very Good",
-            "Good",
-        ])
 
         self.min_price = QDoubleSpinBox()
         self.min_price.setRange(0, 100000)
@@ -437,12 +411,8 @@ class VinylFinder(QMainWindow):
 
         form.addRow("Artist:", self.artist_edit)
         form.addRow("Title:", self.title_edit)
-        form.addRow("Album:", self.album_edit)
         form.addRow("Record label:", self.label_edit)
         form.addRow("Catalog number:", self.catalog_edit)
-        form.addRow("Release year:", self.year_edit)
-        form.addRow("Format:", self.format_combo)
-        form.addRow("Condition:", self.condition_combo)
 
         price_row = QWidget()
         price_layout = QHBoxLayout(price_row)
@@ -497,32 +467,19 @@ class VinylFinder(QMainWindow):
     def current_query_parts(self):
         artist = self.artist_edit.text().strip()
         title = self.title_edit.text().strip()
-        album = self.album_edit.text().strip()
         label = self.label_edit.text().strip()
         catalog = self.catalog_edit.text().strip()
-        year = self.year_edit.text().strip()
 
         search_terms = [
             artist,
             title,
-            album,
             label,
             catalog,
-            year,
         ]
 
         search_terms = [
             term for term in search_terms if term
         ]
-
-        record_format = self.format_combo.currentText()
-        condition = self.condition_combo.currentText()
-
-        if record_format != "Any vinyl format":
-            search_terms.append(record_format)
-
-        if condition != "Any condition":
-            search_terms.append(condition)
 
         if self.min_price.value() > 0:
             search_terms.append(
@@ -539,12 +496,8 @@ class VinylFinder(QMainWindow):
         return {
             "artist": artist,
             "title": title,
-            "album": album,
             "label": label,
             "catalog": catalog,
-            "year": year,
-            "format": record_format,
-            "condition": condition,
             "query": " ".join(search_terms),
         }
 
@@ -638,9 +591,8 @@ class VinylFinder(QMainWindow):
                     parts_for_url["query"],
                     parts_for_url["artist"],
                     parts_for_url["title"],
-                    parts_for_url["album"],
-                    parts_for_url["year"],
-                    parts_for_url["format"],
+                    parts_for_url["label"],
+                    parts_for_url["catalog"],
                 )
 
                 if not valid_http_url(url):
@@ -707,15 +659,11 @@ class VinylFinder(QMainWindow):
         for widget in (
             self.artist_edit,
             self.title_edit,
-            self.album_edit,
             self.label_edit,
             self.catalog_edit,
-            self.year_edit,
         ):
             widget.clear()
 
-        self.format_combo.setCurrentIndex(0)
-        self.condition_combo.setCurrentIndex(0)
         self.min_price.setValue(0)
         self.max_price.setValue(100000)
 
