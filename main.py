@@ -5,10 +5,11 @@ import re
 import webbrowser
 import urllib.request
 import urllib.error
+from html.parser import HTMLParser
 
 from pathlib import Path
 from datetime import datetime
-from urllib.parse import quote_plus, urlencode, urlparse
+from urllib.parse import quote_plus, urlencode, urlparse, parse_qs, unquote
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -37,7 +38,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "VinylFinder"
-APP_VERSION = "0.3.9"
+APP_VERSION = "0.5.0"
 
 DATA_DIR = Path.home() / "AppData" / "Local" / APP_NAME
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -127,7 +128,23 @@ COUNTRY_SHOP_CANDIDATES = {
         ("Bengans", "https://www.bengans.com/search?search={query}"),
     ],
     "Italy": [
-        ("Radiation Records", "https://shop.radiationrecords.net/search?q={query}"),
+        ("DVDLAND", "https://www.dvdland.it/search?controller=search&s={query}"),
+        ("Disco Express", "https://disco-express.it/search?controller=search&s={query}"),
+        ("Cuordivinile", "https://www.cuordivinile.it/search?controller=search&s={query}"),
+        ("Fonè Records Shop", "https://foneshop.it/?s={query}"),
+        # Italian webshops explicitly selling physical vinyl records (vinili).
+        # Search routes are tested at generation time; HTTP 403 is retained as
+        # unverified because some shops block automated requests.
+        ("Ciakky70 - The Record Store", "https://www.ciakky70.com/it/search?controller=search&s={query}"),
+        ("Il Discomane", "https://www.discomane.com/search?q={query}"),
+        ("MOVE ON Firenze", "https://moveonfirenze.com/?s={query}"),
+        ("Potente Record Store", "https://www.potenterecords.com/search?q={query}"),
+        ("Lettera 22 - La Bottega del Vinile", "https://lettera22dischi.it/?s={query}"),
+        ("Discoteca Laziale", "https://www.discotecalaziale.com/catalogsearch/result/?q={query}"),
+        ("Massive Music Store", "https://massivemusicstore.com/search?q={query}"),
+        ("HiFiRecord", "https://www.hifirecord.it/?s={query}"),
+        ("Rock & Folk", "https://www.rockandfolk.com/?s={query}"),
+        ("Discobolandia", "https://www.discobolandia.biz/search?controller=search&s={query}"),
     ],
     "Spain": [
         ("Fnac España", "https://www.fnac.es/SearchResult/ResultList.aspx?Search={query}"),
@@ -404,6 +421,204 @@ class FavoriteDialog(QDialog):
             self.url_edit.text().strip(),
             self.notes_edit.text().strip(),
         )
+
+
+class DuckDuckGoResultsParser(HTMLParser):
+    """Extract organic result links from DuckDuckGo's HTML results page."""
+    def __init__(self):
+        super().__init__()
+        self.results = []
+        self._anchor = None
+        self._inside_result = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        classes = attrs.get("class", "")
+        if tag == "a" and "result__a" in classes:
+            self._anchor = {"url": attrs.get("href", ""), "title": ""}
+            self._inside_result = True
+
+    def handle_data(self, data):
+        if self._inside_result and self._anchor is not None:
+            self._anchor["title"] += data
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self._inside_result and self._anchor is not None:
+            self._anchor["title"] = self._anchor["title"].strip()
+            if self._anchor["url"] and self._anchor["title"]:
+                self.results.append(self._anchor)
+            self._anchor = None
+            self._inside_result = False
+
+
+class CountryWebsiteResultsDialog(QDialog):
+    """Review discovered shops, test search URL templates, and export successes."""
+    def __init__(self, country, rows, parent=None):
+        super().__init__(parent)
+        self.country = country
+        self.setWindowTitle(f"Search Websites — {country}")
+        self.resize(1120, 650)
+        layout = QVBoxLayout(self)
+        self.info_label = QLabel(
+            "Select webshops, then click 'Test / Generate Search URL'. "
+            "Only positive search tests receive a reusable URL template."
+        )
+        self.info_label.setWordWrap(True)
+        layout.addWidget(self.info_label)
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels([
+            "Select", "Website", "Website URL", "Search URL template", "Test result"
+        ])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table, 1)
+        self.rows = []
+        for row_data in rows:
+            self.add_result(row_data)
+        buttons = QHBoxLayout()
+        self.test_button = QPushButton("Test / Generate Search URL")
+        self.test_button.clicked.connect(self.test_selected_rows)
+        self.export_button = QPushButton("Export Successful CSV")
+        self.export_button.clicked.connect(self.export_successful_csv)
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        buttons.addWidget(self.test_button)
+        buttons.addWidget(self.export_button)
+        buttons.addStretch(1)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+    def add_result(self, data):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        check = QCheckBox()
+        check.setChecked(True)
+        check.setToolTip("Select this website for search URL testing")
+        self.table.setCellWidget(row, 0, check)
+        self.table.setItem(row, 1, QTableWidgetItem(data["name"]))
+        self.table.setItem(row, 2, QTableWidgetItem(data["url"]))
+        self.table.setItem(row, 3, QTableWidgetItem("Not tested"))
+        self.table.setItem(row, 4, QTableWidgetItem("Awaiting search URL test"))
+        self.rows.append({**data, "template": "", "test_status": "Not tested"})
+
+    def selected_rows(self):
+        return [i for i in range(self.table.rowCount())
+                if self.table.cellWidget(i, 0).isChecked()]
+
+    def test_selected_rows(self):
+        selected = self.selected_rows()
+        if not selected:
+            QMessageBox.information(self, "Search Websites", "Select at least one website.")
+            return
+        self.test_button.setEnabled(False)
+        try:
+            for row in selected:
+                data = self.rows[row]
+                self.table.item(row, 3).setText("Testing search patterns...")
+                self.table.item(row, 4).setText("Testing...")
+                QApplication.processEvents()
+                template, status = test_search_templates(data["url"], self.country)
+                data["template"] = template or ""
+                data["test_status"] = status
+                self.table.item(row, 3).setText(template or "No positive search pattern found")
+                self.table.item(row, 3).setToolTip(template or "")
+                self.table.item(row, 4).setText(status)
+        finally:
+            self.test_button.setEnabled(True)
+        successes = sum(1 for i in selected if self.rows[i]["template"])
+        QMessageBox.information(
+            self, "Search URL Test Complete",
+            f"Positive search tests: {successes} of {len(selected)} selected websites.\n\n"
+            "A positive test means the candidate search route returned a page with product/search evidence; "
+            "please open the URL in a browser before relying on it."
+        )
+
+    def export_successful_csv(self):
+        rows = [r for r in self.rows if r["template"] and r["test_status"].startswith("PASS")]
+        if not rows:
+            QMessageBox.information(self, "Export CSV", "No positively tested search URLs are available yet.")
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export positively tested websites",
+            f"VinylFinder_{self.country.replace(' ', '_')}_sources.csv", "CSV files (*.csv)"
+        )
+        if not file_path:
+            return
+        if not file_path.lower().endswith(".csv"):
+            file_path += ".csv"
+        fields = ["name", "url_template", "enabled", "country", "test_status", "website_url", "tested_at"]
+        now = datetime.now().isoformat(timespec="seconds")
+        try:
+            with open(file_path, "w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fields)
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow({
+                        "name": row["name"], "url_template": row["template"],
+                        "enabled": "1", "country": self.country,
+                        "test_status": row["test_status"], "website_url": row["url"],
+                        "tested_at": now,
+                    })
+        except OSError as exc:
+            QMessageBox.warning(self, "Export CSV", f"Could not save CSV:\n{exc}")
+            return
+        QMessageBox.information(self, "Export CSV", f"Exported {len(rows)} tested websites to:\n{file_path}")
+
+
+def test_search_templates(base_url, country):
+    """Try common store search routes and require product/search evidence."""
+    base = base_url.rstrip("/")
+    query = "vinile" if country == "Italy" else "vinyl"
+    encoded = quote_plus(query)
+    candidates = [
+        f"{base}/search?q={{query}}",
+        f"{base}/search?query={{query}}",
+        f"{base}/search?type=product&q={{query}}",
+        f"{base}/search?controller=search&s={{query}}",
+        f"{base}/catalogsearch/result/?q={{query}}",
+        f"{base}/?s={{query}}&post_type=product",
+        f"{base}/?s={{query}}",
+        f"{base}/search/?q%5Ball%5D%5Ball%5D={{query}}",
+    ]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+    }
+    for template in candidates:
+        test_url = template.replace("{query}", encoded)
+        try:
+            request = urllib.request.Request(test_url, headers=headers)
+            with urllib.request.urlopen(request, timeout=4) as response:
+                status = getattr(response, "status", 200)
+                final_url = response.geturl()
+                body = response.read(180000).decode("utf-8", errors="ignore").lower()
+            if not (200 <= status < 300) or not valid_http_url(final_url):
+                continue
+            # Require signals of a search/product page; generic homepage 200s don't count.
+            query_evidence = encoded.lower() in final_url.lower() or query in body or encoded.replace("+", " ") in body
+            product_evidence = any(term in body for term in (
+                "vinile", "vinyl", "record", "dischi", "cd", "product", "prodotto", "risultati della ricerca", "search results"
+            ))
+            search_evidence = any(term in final_url.lower() for term in ("search", "?s=", "catalogsearch", "controller=search")) or any(
+                term in body for term in ("search-form", "search-form__input", "woocommerce-product-search", "product-list", "search results", "risultati della ricerca")
+            )
+            if query_evidence and product_evidence and search_evidence:
+                return template, f"PASS — HTTP {status}; search/product evidence found"
+        except urllib.error.HTTPError as exc:
+            if exc.code == 403:
+                # 403 cannot prove the route is broken; do not claim a positive result.
+                last_status = "HTTP 403 — browser verification required"
+            else:
+                last_status = f"HTTP {exc.code}"
+        except Exception as exc:
+            last_status = str(exc).replace("\n", " ")[:90] or exc.__class__.__name__
+    return "", f"No positive test; last response: {locals().get('last_status', 'no matching search route')}"
 
 
 # ---------------------------------------------------------
@@ -778,6 +993,9 @@ class VinylFinder(QMainWindow):
             self.country_picklist.addItem(country_name, country_code)
         self.country_picklist.setCurrentText("Netherlands")
         country_row.addWidget(self.country_picklist, 1)
+        search_websites_btn = QPushButton("Search Websites")
+        search_websites_btn.clicked.connect(self.search_websites_online)
+        country_row.addWidget(search_websites_btn)
         generate_country_btn = QPushButton("Generate Country CSV")
         generate_country_btn.clicked.connect(self.generate_country_sources_csv)
         country_row.addWidget(generate_country_btn)
@@ -1014,6 +1232,111 @@ class VinylFinder(QMainWindow):
 
         self.refresh_sources()
 
+    def search_websites_online(self):
+        country = self.country_picklist.currentText()
+        country_code = self.country_picklist.currentData()
+        country_queries = {
+            "Italy": 'negozio online vinili CD compra dischi vinile',
+            "Netherlands": 'online platenwinkel vinyl platen cd webshop',
+            "Germany": 'Online Schallplatten Shop Vinyl CDs',
+            "France": 'boutique en ligne disques vinyles CD',
+            "Spain": 'tienda online discos vinilo CD',
+            "United Kingdom": 'online record shop vinyl records CDs',
+        }
+        query = country_queries.get(
+            country, f'online record shop vinyl records CDs {country}'
+        )
+        candidates = []
+        errors = []
+        search_queries = [
+            query,
+            f'"vinili" "acquista online" {country}',
+            f'negozio dischi vinile CD shop online {country}',
+        ]
+        for search_term in search_queries:
+            search_url = "https://html.duckduckgo.com/html/?q=" + quote_plus(search_term)
+            request = urllib.request.Request(
+                search_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=12) as response:
+                    html = response.read(1500000).decode("utf-8", errors="ignore")
+                parser = DuckDuckGoResultsParser()
+                parser.feed(html)
+                for result in parser.results:
+                    url = result["url"]
+                    title = result["title"]
+                    if "duckduckgo.com/l/" in url:
+                        redirect_values = parse_qs(urlparse(url).query).get("uddg", [])
+                        if redirect_values:
+                            url = unquote(redirect_values[0])
+                    if not valid_http_url(url):
+                        continue
+                    host = urlparse(url).netloc.lower()
+                    if any(domain in host for domain in (
+                        "duckduckgo.com", "google.com", "bing.com", "youtube.com", "spotify.com",
+                        "soundcloud.com", "deezer.com", "tidal.com", "music.apple.com", "amazon.com/gp/video"
+                    )):
+                        continue
+                    combined = title.lower() + " " + url.lower()
+                    if any(term in combined for term in (
+                        "streaming", "streaming music", "listen online", "mp3 download", "digital music only"
+                    )):
+                        continue
+                    # Search results are candidates, not assumed to be valid shops.
+                    candidates.append({"name": title[:100], "url": url})
+            except Exception as exc:
+                errors.append(f"Search '{search_term}': {str(exc)[:120]}")
+
+        # Merge curated country-specific shops so search-engine markup or throttling
+        # cannot erase known physical-record retailers from the review list.
+        for name, template in COUNTRY_SHOP_CANDIDATES.get(country, []):
+            parsed_template = urlparse(template)
+            base = f"{parsed_template.scheme}://{parsed_template.netloc}"
+            if not valid_http_url(base):
+                continue
+            candidates.append({"name": name, "url": base})
+
+        # Include the source platforms as candidates, but never label them as
+        # positively tested until the user explicitly tests their search routes.
+        ebay_domain = EBAY_DOMAINS.get(country_code, "www.ebay.com")
+        candidates.extend([
+            {"name": "Discogs", "url": "https://www.discogs.com"},
+            {"name": "eBay", "url": f"https://{ebay_domain}"},
+        ])
+        unique = []
+        seen = set()
+        for candidate in candidates:
+            parsed = urlparse(candidate["url"])
+            base = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ""
+            key = base.casefold()
+            if not base or key in seen:
+                continue
+            seen.add(key)
+            candidate["url"] = base
+            unique.append(candidate)
+
+        if not unique:
+            message = "No website candidates were found."
+            if errors:
+                message += "\n\n" + "\n".join(errors)
+            QMessageBox.warning(self, "Search Websites", message)
+            return
+
+        if errors:
+            QMessageBox.information(
+                self,
+                "Search Websites",
+                "Some internet searches could not be completed. Known country-specific candidates "
+                "are still included where available.\n\n" + "\n".join(errors[:3]),
+            )
+        dialog = CountryWebsiteResultsDialog(country, unique, self)
+        dialog.exec()
+
     def generate_country_sources_csv(self):
         country = self.country_picklist.currentText()
         country_code = self.country_picklist.currentData()
@@ -1046,7 +1369,10 @@ class VinylFinder(QMainWindow):
                 seen.add(key)
                 unique_candidates.append((name, template))
 
-        test_query = "vinyl test"
+        # Use a country-language term relevant to physical records rather than
+        # the generic English phrase "vinyl test". This also helps validate
+        # the site's actual product-search route with a meaningful query.
+        test_query = "vinile" if country == "Italy" else "vinyl"
         passed_rows = []
         unverified = []
         failed = []
