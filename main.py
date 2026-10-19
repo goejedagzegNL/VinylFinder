@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "VinylFinder"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 
 DATA_DIR = Path.home() / "AppData" / "Local" / APP_NAME
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -378,30 +378,34 @@ class VinylFinder(QMainWindow):
             QAbstractItemView.EditTrigger.NoEditTriggers
         )
         table.setAlternatingRowColors(True)
-        # Use explicit high-contrast colors so table rows remain readable
-        # regardless of the Windows theme or system accent color.
+        # Black background with white text for consistent contrast.
         table.setStyleSheet("""
             QTableWidget {
-                background-color: #ffffff;
-                alternate-background-color: #f0f3f7;
-                color: #202124;
-                gridline-color: #c7cdd4;
-                selection-background-color: #c7e3ff;
-                selection-color: #111111;
+                background-color: #000000;
+                alternate-background-color: #181818;
+                color: #ffffff;
+                gridline-color: #555555;
+                selection-background-color: #3d5f86;
+                selection-color: #ffffff;
             }
             QTableWidget::item {
-                color: #202124;
+                background-color: #000000;
+                color: #ffffff;
                 padding: 4px;
             }
+            QTableWidget::item:alternate {
+                background-color: #181818;
+                color: #ffffff;
+            }
             QTableWidget::item:selected {
-                background-color: #c7e3ff;
-                color: #111111;
+                background-color: #3d5f86;
+                color: #ffffff;
             }
             QHeaderView::section {
-                background-color: #e2e7ed;
-                color: #202124;
+                background-color: #292929;
+                color: #ffffff;
                 padding: 5px;
-                border: 1px solid #c7cdd4;
+                border: 1px solid #555555;
                 font-weight: bold;
             }
         """)
@@ -1336,6 +1340,96 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")
+    # Application-wide dark theme: black backgrounds and white text.
+    # Explicit colors prevent Windows 11 theme settings from reducing contrast.
+    app.setStyleSheet("""
+        QWidget {
+            background-color: #000000;
+            color: #ffffff;
+        }
+        QMainWindow, QDialog, QTabWidget::pane, QScrollArea {
+            background-color: #000000;
+            color: #ffffff;
+        }
+        QLabel {
+            background-color: transparent;
+            color: #ffffff;
+        }
+        QLineEdit, QTextEdit, QPlainTextEdit, QComboBox,
+        QSpinBox, QDoubleSpinBox {
+            background-color: #111111;
+            color: #ffffff;
+            selection-background-color: #3d5f86;
+            selection-color: #ffffff;
+            border: 1px solid #666666;
+            padding: 4px;
+        }
+        QComboBox QAbstractItemView {
+            background-color: #111111;
+            color: #ffffff;
+            selection-background-color: #3d5f86;
+            selection-color: #ffffff;
+        }
+        QPushButton {
+            background-color: #292929;
+            color: #ffffff;
+            border: 1px solid #666666;
+            border-radius: 3px;
+            padding: 6px 10px;
+        }
+        QPushButton:hover {
+            background-color: #3b3b3b;
+        }
+        QPushButton:pressed {
+            background-color: #3d5f86;
+        }
+        QPushButton:disabled {
+            background-color: #181818;
+            color: #888888;
+            border-color: #444444;
+        }
+        QTabBar::tab {
+            background-color: #202020;
+            color: #ffffff;
+            padding: 8px 12px;
+            border: 1px solid #555555;
+        }
+        QTabBar::tab:selected {
+            background-color: #3d5f86;
+            color: #ffffff;
+        }
+        QHeaderView::section {
+            background-color: #292929;
+            color: #ffffff;
+            border: 1px solid #555555;
+            padding: 5px;
+        }
+        QStatusBar {
+            background-color: #111111;
+            color: #ffffff;
+        }
+        QMenu, QMenuBar {
+            background-color: #111111;
+            color: #ffffff;
+            border: 1px solid #555555;
+        }
+        QMenu::item:selected {
+            background-color: #3d5f86;
+            color: #ffffff;
+        }
+        QCheckBox {
+            background-color: transparent;
+            color: #ffffff;
+        }
+        QProgressDialog {
+            background-color: #000000;
+            color: #ffffff;
+        }
+        QMessageBox {
+            background-color: #000000;
+            color: #ffffff;
+        }
+    """)
 
     window = VinylFinder()
     window.showMaximized()
