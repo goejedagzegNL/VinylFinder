@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QFormLayout,
     QLineEdit,
-    QDoubleSpinBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -35,7 +34,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "VinylFinder"
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.3.4"
 
 DATA_DIR = Path.home() / "AppData" / "Local" / APP_NAME
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -429,32 +428,10 @@ class VinylFinder(QMainWindow):
         self.label_edit = QLineEdit()
         self.catalog_edit = QLineEdit()
 
-        self.min_price = QDoubleSpinBox()
-        self.min_price.setRange(0, 100000)
-        self.min_price.setPrefix("€ ")
-        self.min_price.setDecimals(2)
-
-        self.max_price = QDoubleSpinBox()
-        self.max_price.setRange(0, 100000)
-        self.max_price.setValue(100000)
-        self.max_price.setPrefix("€ ")
-        self.max_price.setDecimals(2)
-
         form.addRow("Artist:", self.artist_edit)
         form.addRow("Title:", self.title_edit)
         form.addRow("Record label:", self.label_edit)
         form.addRow("Catalog number:", self.catalog_edit)
-
-        price_row = QWidget()
-        price_layout = QHBoxLayout(price_row)
-        price_layout.setContentsMargins(0, 0, 0, 0)
-
-        price_layout.addWidget(QLabel("Min:"))
-        price_layout.addWidget(self.min_price)
-        price_layout.addWidget(QLabel("Max:"))
-        price_layout.addWidget(self.max_price)
-
-        form.addRow("Price filter:", price_row)
 
         layout.addLayout(form)
 
@@ -470,12 +447,6 @@ class VinylFinder(QMainWindow):
         buttons.addWidget(clear_btn)
 
         layout.addLayout(buttons)
-
-        layout.addWidget(QLabel(
-            "Search Enabled Sources prepares search links "
-            "for all enabled websites. Open a search with "
-            "the button in the results table."
-        ))
 
         self.results_table = QTableWidget(0, 3)
 
@@ -511,18 +482,6 @@ class VinylFinder(QMainWindow):
         search_terms = [
             term for term in search_terms if term
         ]
-
-        if self.min_price.value() > 0:
-            search_terms.append(
-                f"minimum price "
-                f"{self.min_price.value():.2f} EUR"
-            )
-
-        if self.max_price.value() < 100000:
-            search_terms.append(
-                f"maximum price "
-                f"{self.max_price.value():.2f} EUR"
-            )
 
         return {
             "artist": artist,
@@ -645,14 +604,13 @@ class VinylFinder(QMainWindow):
                     row, 1, url_item
                 )
 
-                button = QPushButton("Open Search")
-                button.clicked.connect(
+                open_button = QPushButton("Open Search")
+                open_button.clicked.connect(
                     lambda checked=False, target=url:
                         webbrowser.open(target)
                 )
-
                 self.results_table.setCellWidget(
-                    row, 2, button
+                    row, 2, open_button
                 )
 
             self.record_search(query)
@@ -694,9 +652,6 @@ class VinylFinder(QMainWindow):
             self.catalog_edit,
         ):
             widget.clear()
-
-        self.min_price.setValue(0)
-        self.max_price.setValue(100000)
 
         self.results_table.setRowCount(0)
 
