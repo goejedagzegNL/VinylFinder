@@ -586,15 +586,22 @@ class VinylFinder(QMainWindow):
     # SEARCH PRODUCTS
     # ---------------------------------------------------------
 
+
     def search_products(self):
         parts = self.current_query_parts()
 
-        # Use every field the user entered, not only artist/title/album.
+        # Verzamel alle ingevulde zoekvelden.
         search_keys = (
-            "artist", "title", "album", "label", "catalog", "year"
+            "artist",
+            "title",
+            "album",
+            "label",
+            "catalog",
+            "year",
         )
+
         terms = [
-            parts.get(key, "").strip().casefold()
+            parts.get(key, "").strip()
             for key in search_keys
             if parts.get(key, "").strip()
         ]
@@ -603,258 +610,142 @@ class VinylFinder(QMainWindow):
         condition = self.condition_combo.currentText()
 
         if record_format != "Any vinyl format":
-            terms.append(record_format.casefold())
+            terms.append(record_format)
 
         if condition != "Any condition":
-            terms.append(condition.casefold())
+            terms.append(condition)
 
         if not terms:
             QMessageBox.information(
                 self,
                 "Search Products",
-                "Enter at least one search criterion."
+                "Enter at least one search criterion.",
             )
             return
 
+        query = " ".join(terms)
+
+        # Toon de productresultaten en wis oude resultaten.
         self.results_table.hide()
         self.product_table.show()
         self.product_table.setRowCount(0)
+
         self.product_table.setColumnCount(3)
-        self.product_table.setHorizontalHeaderLabels(
-            ["Website / Store", "Product", "Action"]
-        )
+        self.product_table.setHorizontalHeaderLabels([
+            "Website / Store",
+            "Product",
+            "Action",
+        ])
 
-        self.product_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
+        # Toon Searching... tijdens het voorbereiden.
+        progress = QProgressDialog(
+            "Searching...",
+            "",
+            0,
+            0,
+            self,
         )
-        self.product_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch
+        progress.setWindowTitle("VinylFinder")
+        progress.setWindowModality(
+            Qt.WindowModality.ApplicationModal
         )
-        self.product_table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.ResizeToContents
-        )
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.show()
 
-        self.statusBar().showMessage("Searching enabled stores...")
         QApplication.processEvents()
 
-        with connect_db() as conn:
-            sources = conn.execute(
-                "SELECT * FROM sources WHERE enabled = 1 ORDER BY name"
-            ).fetchall()
+        try:
+            # Discogs zonder API-token:
+            # open de openbare zoekpagina in de browser.
+            from urllib.parse import urlencode
 
-        if not sources:
-            self.statusBar().showMessage("No enabled stores.")
-            QMessageBox.information(
-                self,
-                "Search Products",
-                "No enabled stores are configured."
-            )
-            return
+            search_params = {
+                "q": query,
+                "type": "all",
+            }
 
-        def normalize(value):
-            return " ".join(str(value or "").casefold().split())
-
-        def matches_terms(text):
-            normalized = normalize(text)
-            return bool(normalized) and all(
-                term in normalized for term in terms
+            # Gebruik Discogs' openbare zoekpagina.
+            search_url = (
+                "https://www.discogs.com/search/?"
+                + urlencode(search_params)
             )
 
-        seen_urls = set()
-        failed = []
-        found = 0
-
-        def add_product(source_name, product_title, product_url):
-            nonlocal found
-
-            product_title = " ".join(
-                str(product_title or "").split()
-            )
-            product_url = (product_url or "").strip()
-
-            if len(product_title) < 3:
+            if not valid_http_url(search_url):
+                QMessageBox.warning(
+                    self,
+                    "Search Products",
+                    "The Discogs search URL is invalid.",
+                )
                 return
 
-            if not matches_terms(product_title):
+            opened = webbrowser.open(search_url)
+
+            if not opened:
+                QMessageBox.warning(
+                    self,
+                    "Search Products",
+                    "Could not open Discogs in your browser.",
+                )
                 return
 
-            if not valid_http_url(product_url):
-                return
-
-            parsed = urlparse(product_url)
-            if parsed.scheme not in ("http", "https"):
-                return
-
-            excluded_paths = (
-                "/search", "/account", "/cart", "/basket",
-                "/checkout", "/login", "/register", "/wishlist"
-            )
-            if any(
-                path in parsed.path.casefold()
-                for path in excluded_paths
-            ):
-                return
-
-            normalized_url = product_url.rstrip("/").casefold()
-            if normalized_url in seen_urls:
-                return
-
-            seen_urls.add(normalized_url)
-
+            # Voeg Discogs als zoekbestemming toe.
             row = self.product_table.rowCount()
             self.product_table.insertRow(row)
+
             self.product_table.setItem(
-                row, 0, QTableWidgetItem(source_name)
-            )
-            self.product_table.setItem(
-                row, 1, QTableWidgetItem(product_title)
+                row,
+                0,
+                QTableWidgetItem("Discogs"),
             )
 
-            open_btn = QPushButton("Open Product")
+            self.product_table.setItem(
+                row,
+                1,
+                QTableWidgetItem(
+                    f"Discogs search: {query}"
+                ),
+            )
+
+            open_btn = QPushButton("Open Search")
             open_btn.clicked.connect(
-                lambda checked=False, target=product_url:
+                lambda checked=False, target=search_url:
                     webbrowser.open(target)
             )
-            self.product_table.setCellWidget(row, 2, open_btn)
-            found += 1
-
-        for source in sources:
-            url = build_search_url(
-                source["url_template"],
-                parts["query"],
-                parts.get("artist", ""),
-                parts.get("title", ""),
-                parts.get("album", ""),
-                parts.get("year", ""),
-                parts.get("format", "")
+            self.product_table.setCellWidget(
+                row,
+                2,
+                open_btn,
             )
 
-            if not valid_http_url(url):
-                failed.append(source["name"])
-                continue
+            self.record_search(query)
 
-            try:
-                response = requests.get(
-                    url,
-                    timeout=20,
-                    headers={
-                        "User-Agent": (
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Chrome/131.0.0.0 Safari/537.36"
-                        ),
-                        "Accept-Language": "en-US,en;q=0.9,nl;q=0.8",
-                    }
-                )
-                response.raise_for_status()
+            self.statusBar().showMessage(
+                "Discogs search opened in your browser."
+            )
 
-                content_type = response.headers.get(
-                    "Content-Type", ""
-                ).casefold()
-                if "html" not in content_type:
-                    failed.append(source["name"])
-                    continue
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Search Products",
+                f"Could not start the search:\n{exc}",
+            )
 
-                soup = BeautifulSoup(
-                    response.text, "html.parser"
-                )
+        finally:
+            # Sluit Searching... altijd, ook bij een fout.
+            progress.close()
+            progress.deleteLater()
 
-                # Read structured product data when available.
-                for script in soup.find_all(
-                    "script",
-                    attrs={"type": "application/ld+json"}
-                ):
-                    raw_json = script.string or script.get_text(
-                        strip=True
-                    )
-                    if not raw_json:
-                        continue
-
-                    try:
-                        import json
-                        data = json.loads(raw_json)
-                    except (ValueError, TypeError):
-                        continue
-
-                    def process_jsonld(obj):
-                        if isinstance(obj, list):
-                            for child in obj:
-                                process_jsonld(child)
-                            return
-
-                        if not isinstance(obj, dict):
-                            return
-
-                        obj_type = obj.get("@type", [])
-                        if isinstance(obj_type, str):
-                            obj_type = [obj_type]
-
-                        if any(
-                            str(item).casefold() == "product"
-                            for item in obj_type
-                        ):
-                            name = obj.get("name", "")
-                            product_url = (
-                                obj.get("url") or obj.get("@id") or ""
-                            )
-
-                            if isinstance(product_url, str):
-                                product_url = urljoin(url, product_url)
-                            else:
-                                product_url = ""
-
-                            add_product(
-                                source["name"], name, product_url
-                            )
-
-                        for key, value in obj.items():
-                            if key != "@graph" and isinstance(
-                                value, (dict, list)
-                            ):
-                                process_jsonld(value)
-
-                    process_jsonld(data)
-
-                # Fallback: inspect individual links on the page.
-                for link in soup.find_all("a", href=True):
-                    title_text = " ".join(
-                        link.stripped_strings
-                    ).strip()
-
-                    if len(title_text) < 3:
-                        continue
-
-                    product_url = urljoin(url, link["href"])
-                    if product_url.rstrip("/") == url.rstrip("/"):
-                        continue
-
-                    add_product(
-                        source["name"], title_text, product_url
-                    )
-
-            except requests.RequestException:
-                failed.append(source["name"])
-
-        self.refresh_history()
-
-        self.statusBar().showMessage(
-            f"Found {found} possible product results."
-        )
-
-        if found == 0:
+        # Geen resultaten gevonden in de lokale producttabel?
+        # De Discogs-zoekresultaten staan in de browser.
+        if self.product_table.rowCount() == 0:
             QMessageBox.information(
                 self,
                 "Article Not Found",
-                "No matching product links were identified.\n\n"
-                "Try different search criteria. Some stores may "
-                "require JavaScript or block automatic retrieval."
-            )
-        elif failed:
-            QMessageBox.information(
-                self,
-                "Some stores could not be searched",
-                "Automatic retrieval failed for:\n"
-                + "\n".join(failed)
+                "No product result could be opened.\n\n"
+                "Try different search criteria.",
             )
 
     # ---------------------------------------------------------
