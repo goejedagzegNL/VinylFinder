@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "VinylFinder"
-APP_VERSION = "0.3.4"
+APP_VERSION = "0.3.5"
 
 DATA_DIR = Path.home() / "AppData" / "Local" / APP_NAME
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -458,9 +458,12 @@ class VinylFinder(QMainWindow):
 
         self.configure_table(self.results_table)
 
-        self.results_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch
-        )
+        header = self.results_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.results_table.setColumnWidth(2, 155)
+        self.results_table.verticalHeader().setDefaultSectionSize(42)
 
         layout.addWidget(self.results_table, 1)
 
@@ -605,10 +608,13 @@ class VinylFinder(QMainWindow):
                 )
 
                 open_button = QPushButton("Open Search")
+                open_button.setMinimumSize(130, 30)
+                open_button.setToolTip("Open this search in your web browser")
                 open_button.clicked.connect(
                     lambda checked=False, target=url:
                         webbrowser.open(target)
                 )
+                self.results_table.setRowHeight(row, 42)
                 self.results_table.setCellWidget(
                     row, 2, open_button
                 )
@@ -1204,6 +1210,8 @@ class VinylFinder(QMainWindow):
         repeat_btn.clicked.connect(self.repeat_history_search)
 
         clear_btn = QPushButton("Clear History")
+        clear_btn.setMinimumHeight(32)
+        clear_btn.setToolTip("Delete all saved searches from Search History")
         clear_btn.clicked.connect(self.clear_history)
 
         buttons.addWidget(repeat_btn)
