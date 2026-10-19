@@ -1,4 +1,5 @@
 
+import os
 import sys
 import sqlite3
 import csv
@@ -586,60 +587,63 @@ class VinylFinder(QMainWindow):
     # SEARCH PRODUCTS
     # ---------------------------------------------------------
 
-
     def search_products(self):
         parts = self.current_query_parts()
 
-        # Verzamel alle ingevulde zoekvelden.
-        search_keys = (
-            "artist",
-            "title",
-            "album",
-            "label",
-            "catalog",
-            "year",
-        )
+        token = os.environ.get("DISCOGS_TOKEN", "").strip()
 
-        terms = [
-            parts.get(key, "").strip()
-            for key in search_keys
-            if parts.get(key, "").strip()
-        ]
-
-        record_format = self.format_combo.currentText()
-        condition = self.condition_combo.currentText()
-
-        if record_format != "Any vinyl format":
-            terms.append(record_format)
-
-        if condition != "Any condition":
-            terms.append(condition)
-
-        if not terms:
-            QMessageBox.information(
+        if not token:
+            QMessageBox.warning(
                 self,
-                "Search Products",
-                "Enter at least one search criterion.",
+                "Discogs API",
+                "Geen Discogs API-token gevonden.\n\n"
+                "Stel eerst de omgevingsvariabele "
+                "DISCOGS_TOKEN in Windows in."
             )
             return
 
-        query = " ".join(terms)
+        search_fields = (
+            "artist", "title", "album",
+            "label", "catalog", "year"
+        )
 
-        # Toon de productresultaten en wis oude resultaten.
+        if not any(parts.get(key, "").strip()
+                   for key in search_fields):
+            QMessageBox.information(
+                self,
+                "Search Products",
+                "Vul minstens één zoekcriterium in."
+            )
+            return
+
+        query = " ".join(
+            parts.get(key, "").strip()
+            for key in search_fields
+            if parts.get(key, "").strip()
+        )
+
         self.results_table.hide()
         self.product_table.show()
         self.product_table.setRowCount(0)
-
         self.product_table.setColumnCount(3)
         self.product_table.setHorizontalHeaderLabels([
             "Website / Store",
-            "Product",
+            "Product / Aanbieding",
             "Action",
         ])
 
-        # Toon Searching... tijdens het voorbereiden.
+        self.product_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.product_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self.product_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents
+        )
+
         progress = QProgressDialog(
-            "Searching...",
+            "Searching Discogs for releases with current offers...",
             "",
             0,
             0,
@@ -657,97 +661,238 @@ class VinylFinder(QMainWindow):
 
         QApplication.processEvents()
 
-        try:
-            # Discogs zonder API-token:
-            # open de openbare zoekpagina in de browser.
-            from urllib.parse import urlencode
+        api_headers = {
+            "User-Agent": "VinylFinder/0.2.0",
+            "Authorization": f"Discogs token={token}",
+            "Accept": "application/json",
+        }
 
-            search_params = {
-                "q": query,
-                "type": "all",
+        api_base = "https://api.discogs.com"
+
+        found = 0
+        errors = []
+        seen_ids = set()
+
+        try:
+            params = {
+                "type": "release",
+                "per_page": 20,
+                "page": 1,
             }
 
-            # Gebruik Discogs' openbare zoekpagina.
-            search_url = (
-                "https://www.discogs.com/search/?"
-                + urlencode(search_params)
-            )
+            # Gebruik de afzonderlijke Discogs-zoekvelden.
+            if parts.get("artist"):
+                params["artist"] = parts["artist"]
 
-            if not valid_http_url(search_url):
-                QMessageBox.warning(
-                    self,
-                    "Search Products",
-                    "The Discogs search URL is invalid.",
+            if parts.get("title"):
+                params["release_title"] = parts["title"]
+
+            if parts.get("album"):
+                params["release_title"] = (
+                    parts["album"]
+                    if not parts.get("title")
+                    else parts["title"] + " " + parts["album"]
                 )
-                return
 
-            opened = webbrowser.open(search_url)
+            if parts.get("label"):
+                params["label"] = parts["label"]
 
-            if not opened:
-                QMessageBox.warning(
-                    self,
-                    "Search Products",
-                    "Could not open Discogs in your browser.",
+            if parts.get("catalog"):
+                params["catno"] = parts["catalog"]
+
+            if parts.get("year"):
+                params["year"] = parts["year"]
+
+            record_format = self.format_combo.currentText()
+
+            if record_format != "Any vinyl format":
+                params["format"] = "Vinyl"
+
+            response = requests.get(
+                f"{api_base}/database/search",
+                params=params,
+                headers=api_headers,
+                timeout=25,
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            releases = data.get("results", [])
+
+            for release in releases:
+                QApplication.processEvents()
+
+                release_id = release.get("id")
+
+                if not release_id or release_id in seen_ids:
+                    continue
+
+                seen_ids.add(release_id)
+
+                # Controleer of er actuele Marketplace-aanbiedingen
+                # voor deze release bestaan.
+                try:
+                    stats_response = requests.get(
+                        f"{api_base}/marketplace/stats/"
+                        f"{release_id}",
+                        params={"curr_abbr": "EUR"},
+                        headers=api_headers,
+                        timeout=20,
+                    )
+                    stats_response.raise_for_status()
+                    stats = stats_response.json()
+
+                except requests.RequestException as exc:
+                    errors.append(
+                        f"Release {release_id}: {exc}"
+                    )
+                    continue
+
+                if not stats:
+                    continue
+
+                number_for_sale = stats.get("num_for_sale", 0)
+                lowest_price = stats.get("lowest_price")
+
+                try:
+                    number_for_sale = int(number_for_sale or 0)
+                except (ValueError, TypeError):
+                    number_for_sale = 0
+
+                # Geen aanbiedingen betekent geen resultaat.
+                if number_for_sale <= 0 or not lowest_price:
+                    continue
+
+                try:
+                    price = float(lowest_price["value"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+                # Pas de ingestelde prijsgrenzen toe op de
+                # gerapporteerde laagste aanbiedingsprijs.
+                if price < self.min_price.value():
+                    continue
+
+                if price > self.max_price.value():
+                    continue
+
+                title = release.get("title", "").strip()
+
+                if not title:
+                    continue
+
+                # Link naar de release op Discogs.
+                product_url = (
+                    f"https://www.discogs.com/sell/release/"
+                    f"{release_id}"
                 )
-                return
 
-            # Voeg Discogs als zoekbestemming toe.
-            row = self.product_table.rowCount()
-            self.product_table.insertRow(row)
+                if not valid_http_url(product_url):
+                    continue
 
-            self.product_table.setItem(
-                row,
-                0,
-                QTableWidgetItem("Discogs"),
-            )
+                row = self.product_table.rowCount()
+                self.product_table.insertRow(row)
 
-            self.product_table.setItem(
-                row,
-                1,
-                QTableWidgetItem(
-                    f"Discogs search: {query}"
-                ),
-            )
+                self.product_table.setItem(
+                    row, 0, QTableWidgetItem("Discogs")
+                )
 
-            open_btn = QPushButton("Open Search")
-            open_btn.clicked.connect(
-                lambda checked=False, target=search_url:
-                    webbrowser.open(target)
-            )
-            self.product_table.setCellWidget(
-                row,
-                2,
-                open_btn,
-            )
+                product_text = (
+                    f"{title} | Vanaf "
+                    f"{price:.2f} EUR | "
+                    f"{number_for_sale} aanbieding(en)"
+                )
+
+                self.product_table.setItem(
+                    row, 1, QTableWidgetItem(product_text)
+                )
+
+                open_btn = QPushButton("Bekijk aanbiedingen")
+                open_btn.product_url = product_url
+                open_btn.clicked.connect(
+                    lambda checked=False, target=product_url:
+                        webbrowser.open(target)
+                )
+
+                self.product_table.setCellWidget(
+                    row, 2, open_btn
+                )
+
+                found += 1
 
             self.record_search(query)
 
-            self.statusBar().showMessage(
-                "Discogs search opened in your browser."
+            if errors:
+                self.statusBar().showMessage(
+                    f"{found} resultaten; "
+                    f"{len(errors)} API-aanvragen mislukt."
+                )
+            else:
+                self.statusBar().showMessage(
+                    f"{found} releases met aanbiedingen gevonden."
+                )
+
+            if found == 0:
+                QMessageBox.information(
+                    self,
+                    "Search Products",
+                    "Geen releases met actuele aanbiedingen "
+                    "gevonden binnen de ingestelde prijsgrenzen.\n\n"
+                    "Controleer je zoekcriteria en probeer opnieuw."
+                )
+
+            if errors:
+                QMessageBox.warning(
+                    self,
+                    "Discogs API",
+                    f"{len(errors)} aanvraag/aanvragen "
+                    "voor Marketplace-statistieken zijn mislukt.\n\n"
+                    "Controleer je internetverbinding en probeer "
+                    "het later opnieuw."
+                )
+
+        except requests.HTTPError as exc:
+            status = (
+                exc.response.status_code
+                if exc.response is not None
+                else "onbekend"
             )
 
-        except Exception as exc:
+            if status in (401, 403):
+                message = (
+                    "Discogs heeft de API-aanvraag geweigerd. "
+                    "Controleer je token en API-toegang."
+                )
+            elif status == 429:
+                message = (
+                    "De Discogs API-aanvraaglimiet is bereikt. "
+                    "Wacht even en probeer opnieuw."
+                )
+            else:
+                message = (
+                    f"Discogs gaf HTTP-status {status} terug."
+                )
+
+            self.statusBar().showMessage("Discogs search failed.")
+
+            QMessageBox.warning(
+                self, "Discogs API", message
+            )
+
+        except (requests.RequestException, ValueError) as exc:
+            self.statusBar().showMessage("Discogs search failed.")
+
             QMessageBox.warning(
                 self,
-                "Search Products",
-                f"Could not start the search:\n{exc}",
+                "Discogs API",
+                f"De zoekopdracht is mislukt:\n{exc}"
             )
 
         finally:
-            # Sluit Searching... altijd, ook bij een fout.
             progress.close()
             progress.deleteLater()
 
-        # Geen resultaten gevonden in de lokale producttabel?
-        # De Discogs-zoekresultaten staan in de browser.
-        if self.product_table.rowCount() == 0:
-            QMessageBox.information(
-                self,
-                "Article Not Found",
-                "No product result could be opened.\n\n"
-                "Try different search criteria.",
-            )
-
+    
     # ---------------------------------------------------------
     # FILTERS
     # ---------------------------------------------------------
