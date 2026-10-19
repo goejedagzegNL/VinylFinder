@@ -1,27 +1,15 @@
 
-import os
 import sys
 import sqlite3
 import csv
-import json
 import re
 import webbrowser
 
 from pathlib import Path
 from datetime import datetime
-from urllib.parse import (
-    quote_plus,
-    urlencode,
-    urlparse,
-    urljoin,
-    parse_qsl,
-    urlunparse,
-)
+from urllib.parse import quote_plus, urlencode, urlparse
 
-import requests
-from bs4 import BeautifulSoup
-
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -49,10 +37,11 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "VinylFinder"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 
 DATA_DIR = Path.home() / "AppData" / "Local" / APP_NAME
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 DB_PATH = DATA_DIR / "vinylfinder.db"
 
 DEFAULT_SOURCES = [
@@ -73,60 +62,10 @@ DEFAULT_SOURCES = [
     ),
 ]
 
-ACTION_TERMS = (
-    "toevoegen aan winkelwagen",
-    "in winkelwagen",
-    "winkelwagen",
-    "add to cart",
-    "add to bag",
-    "buy now",
-    "shop now",
-    "checkout",
-    "view cart",
-    "view basket",
-    "naar de kassa",
-    "bestellen",
-    "afrekenen",
-    "verder winkelen",
-    "login",
-    "log in",
-    "sign in",
-    "register",
-    "account",
-    "search",
-    "zoeken",
-    "volgende",
-    "previous",
-    "next page",
-    "add to wishlist",
-    "toevoegen aan verlanglijst",
-    "continue shopping",
-    "proceed to checkout",
-)
 
-EXCLUDED_URL_PARTS = (
-    "/search",
-    "/zoeken",
-    "/zoek/",
-    "/account",
-    "/cart",
-    "/basket",
-    "/winkelwagen",
-    "/checkout",
-    "/login",
-    "/register",
-    "/wishlist",
-)
-
-DIGITAL_TERMS = (
-    "digital download",
-    "mp3 download",
-    "streaming only",
-    "digital album",
-    "download code",
-    "instant download",
-)
-
+# ---------------------------------------------------------
+# DATABASE
+# ---------------------------------------------------------
 
 def connect_db():
     conn = sqlite3.connect(DB_PATH)
@@ -170,12 +109,17 @@ def init_db():
         if count == 0:
             conn.executemany(
                 """
-                INSERT INTO sources (name, url_template, enabled)
+                INSERT INTO sources
+                    (name, url_template, enabled)
                 VALUES (?, ?, ?)
                 """,
                 DEFAULT_SOURCES,
             )
 
+
+# ---------------------------------------------------------
+# URL HELPERS
+# ---------------------------------------------------------
 
 def valid_http_url(url):
     try:
@@ -184,14 +128,8 @@ def valid_http_url(url):
             parsed.scheme.lower() in ("http", "https")
             and bool(parsed.netloc)
         )
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError, TypeError):
         return False
-
-
-def normalize(text):
-    text = str(text or "").casefold()
-    text = re.sub(r"[\W_]+", " ", text, flags=re.UNICODE)
-    return " ".join(text.split())
 
 
 def build_search_url(
@@ -203,14 +141,18 @@ def build_search_url(
     year,
     record_format,
 ):
+    query = query.strip()
+
     values = {
-        "query": quote_plus(query.strip()),
+        "query": quote_plus(query),
         "artist": quote_plus(artist.strip()),
         "title": quote_plus(title.strip()),
         "album": quote_plus(album.strip()),
+        "label": "",
+        "catalog": "",
         "year": quote_plus(year.strip()),
         "format": quote_plus(record_format.strip()),
-        "query_params": urlencode({"q": query.strip()}),
+        "query_params": urlencode({"q": query}),
     }
 
     try:
@@ -225,18 +167,45 @@ def build_search_url(
         return ""
 
 
+def validate_template(template):
+    test_values = {
+        "{query}": "test",
+        "{artist}": "artist",
+        "{title}": "title",
+        "{album}": "album",
+        "{label}": "label",
+        "{catalog}": "catalog",
+        "{year}": "2020",
+        "{format}": "vinyl",
+        "{query_params}": "q=test",
+    }
+
+    test_url = template
+
+    for placeholder, value in test_values.items():
+        test_url = test_url.replace(placeholder, value)
+
+    return valid_http_url(test_url)
+
+
+# ---------------------------------------------------------
+# SOURCE DIALOG
+# ---------------------------------------------------------
+
 class SourceDialog(QDialog):
+
     def __init__(self, parent=None, source=None):
         super().__init__(parent)
 
         self.setWindowTitle("Website / Store")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(500)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
         self.name_edit = QLineEdit()
         self.url_edit = QLineEdit()
+
         self.url_edit.setPlaceholderText(
             "https://example.com/search?q={query}"
         )
@@ -247,11 +216,13 @@ class SourceDialog(QDialog):
         form.addRow("Name:", self.name_edit)
         form.addRow("Search URL template:", self.url_edit)
         form.addRow("", self.enabled_check)
+
         layout.addLayout(form)
 
         layout.addWidget(QLabel(
-            "Available placeholders: {query}, {artist}, {title}, "
-            "{album}, {year}, {format}, {query_params}."
+            "Available placeholders: {query}, {artist}, "
+            "{title}, {album}, {label}, {catalog}, "
+            "{year}, {format}, {query_params}."
         ))
 
         buttons = QDialogButtonBox(
@@ -261,12 +232,15 @@ class SourceDialog(QDialog):
 
         buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
+
         layout.addWidget(buttons)
 
         if source:
             self.name_edit.setText(source["name"])
             self.url_edit.setText(source["url_template"])
-            self.enabled_check.setChecked(bool(source["enabled"]))
+            self.enabled_check.setChecked(
+                bool(source["enabled"])
+            )
 
     def validate_and_accept(self):
         name = self.name_edit.text().strip()
@@ -274,24 +248,13 @@ class SourceDialog(QDialog):
 
         if not name:
             QMessageBox.warning(
-                self, "Missing name", "Enter a source name."
+                self,
+                "Missing name",
+                "Enter a source name.",
             )
             return
 
-        test_url = template
-
-        for key, value in {
-            "{query}": "test",
-            "{artist}": "artist",
-            "{title}": "title",
-            "{album}": "album",
-            "{year}": "2020",
-            "{format}": "vinyl",
-            "{query_params}": "q=test",
-        }.items():
-            test_url = test_url.replace(key, value)
-
-        if not valid_http_url(test_url):
+        if not validate_template(template):
             QMessageBox.warning(
                 self,
                 "Invalid URL",
@@ -309,19 +272,90 @@ class SourceDialog(QDialog):
         )
 
 
+# ---------------------------------------------------------
+# FAVORITE DIALOG
+# ---------------------------------------------------------
+
+class FavoriteDialog(QDialog):
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.setWindowTitle("Add Favorite")
+        self.setMinimumWidth(500)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.title_edit = QLineEdit()
+        self.url_edit = QLineEdit()
+        self.notes_edit = QLineEdit()
+
+        form.addRow("Title:", self.title_edit)
+        form.addRow("URL:", self.url_edit)
+        form.addRow("Notes:", self.notes_edit)
+
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+
+        buttons.accepted.connect(self.validate_and_accept)
+        buttons.rejected.connect(self.reject)
+
+        layout.addWidget(buttons)
+
+    def validate_and_accept(self):
+        if not self.title_edit.text().strip():
+            QMessageBox.warning(
+                self, "Missing title", "Enter a title."
+            )
+            return
+
+        if not valid_http_url(self.url_edit.text().strip()):
+            QMessageBox.warning(
+                self, "Invalid URL", "Enter a valid URL."
+            )
+            return
+
+        self.accept()
+
+    def values(self):
+        return (
+            self.title_edit.text().strip(),
+            self.url_edit.text().strip(),
+            self.notes_edit.text().strip(),
+        )
+
+
+# ---------------------------------------------------------
+# MAIN WINDOW
+# ---------------------------------------------------------
+
 class VinylFinder(QMainWindow):
+
     def __init__(self):
         super().__init__()
 
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
-        self.setMinimumSize(850, 560)
-        self.showMaximized()
+        self.setMinimumSize(900, 600)
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self.create_search_tab(), "Search Records")
-        self.tabs.addTab(self.create_sources_tab(), "Manage Sources")
-        self.tabs.addTab(self.create_favorites_tab(), "Favorites")
-        self.tabs.addTab(self.create_history_tab(), "Search History")
+
+        self.tabs.addTab(
+            self.create_search_tab(), "Search Records"
+        )
+        self.tabs.addTab(
+            self.create_sources_tab(), "Manage Sources"
+        )
+        self.tabs.addTab(
+            self.create_favorites_tab(), "Favorites"
+        )
+        self.tabs.addTab(
+            self.create_history_tab(), "Search History"
+        )
 
         self.setCentralWidget(self.tabs)
 
@@ -329,15 +363,36 @@ class VinylFinder(QMainWindow):
         self.refresh_favorites()
         self.refresh_history()
 
-        self.statusBar().showMessage(f"Database: {DB_PATH}")
+        self.statusBar().showMessage(
+            f"Database: {DB_PATH}"
+        )
 
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
+    # COMMON TABLE CONFIGURATION
+    # -----------------------------------------------------
+
+    @staticmethod
+    def configure_table(table):
+        table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        table.setAlternatingRowColors(True)
+
+        table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+
+    # -----------------------------------------------------
     # SEARCH TAB
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
 
     def create_search_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
+
         form = QFormLayout()
 
         self.artist_edit = QLineEdit()
@@ -372,11 +427,13 @@ class VinylFinder(QMainWindow):
         self.min_price = QDoubleSpinBox()
         self.min_price.setRange(0, 100000)
         self.min_price.setPrefix("€ ")
+        self.min_price.setDecimals(2)
 
         self.max_price = QDoubleSpinBox()
         self.max_price.setRange(0, 100000)
         self.max_price.setValue(100000)
         self.max_price.setPrefix("€ ")
+        self.max_price.setDecimals(2)
 
         form.addRow("Artist:", self.artist_edit)
         form.addRow("Title:", self.title_edit)
@@ -397,6 +454,7 @@ class VinylFinder(QMainWindow):
         price_layout.addWidget(self.max_price)
 
         form.addRow("Price filter:", price_row)
+
         layout.addLayout(form)
 
         buttons = QHBoxLayout()
@@ -404,24 +462,22 @@ class VinylFinder(QMainWindow):
         search_btn = QPushButton("Search Enabled Sources")
         search_btn.clicked.connect(self.search_sources)
 
-        products_btn = QPushButton("Search Products")
-        products_btn.clicked.connect(self.search_products)
-
         clear_btn = QPushButton("Clear Filters")
         clear_btn.clicked.connect(self.clear_filters)
 
         buttons.addWidget(search_btn)
-        buttons.addWidget(products_btn)
         buttons.addWidget(clear_btn)
 
         layout.addLayout(buttons)
 
         layout.addWidget(QLabel(
-            "Search Enabled Sources opens store search pages. "
-            "Search Products retrieves possible product listings."
+            "Search Enabled Sources prepares search links "
+            "for all enabled websites. Open a search with "
+            "the button in the results table."
         ))
 
         self.results_table = QTableWidget(0, 3)
+
         self.results_table.setHorizontalHeaderLabels([
             "Website / Store",
             "Search URL",
@@ -429,43 +485,14 @@ class VinylFinder(QMainWindow):
         ])
 
         self.configure_table(self.results_table)
+
         self.results_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
         )
+
         layout.addWidget(self.results_table, 1)
 
-        layout.addWidget(QLabel("Found Products"))
-
-        # No price column.
-        self.product_table = QTableWidget(0, 3)
-        self.product_table.setHorizontalHeaderLabels([
-            "Website / Store",
-            "Product",
-            "Action",
-        ])
-
-        self.configure_table(self.product_table)
-        self.product_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch
-        )
-        layout.addWidget(self.product_table, 1)
-
-        self.results_table.show()
-        self.product_table.hide()
-
         return page
-
-    @staticmethod
-    def configure_table(table):
-        table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        table.setEditTriggers(
-            QAbstractItemView.EditTrigger.NoEditTriggers
-        )
-        table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
-        )
 
     def current_query_parts(self):
         artist = self.artist_edit.text().strip()
@@ -475,28 +502,38 @@ class VinylFinder(QMainWindow):
         catalog = self.catalog_edit.text().strip()
         year = self.year_edit.text().strip()
 
-        terms = [
-            artist, title, album, label, catalog, year
+        search_terms = [
+            artist,
+            title,
+            album,
+            label,
+            catalog,
+            year,
         ]
-        terms = [term for term in terms if term]
+
+        search_terms = [
+            term for term in search_terms if term
+        ]
 
         record_format = self.format_combo.currentText()
         condition = self.condition_combo.currentText()
 
         if record_format != "Any vinyl format":
-            terms.append(record_format)
+            search_terms.append(record_format)
 
         if condition != "Any condition":
-            terms.append(condition)
+            search_terms.append(condition)
 
         if self.min_price.value() > 0:
-            terms.append(
-                f"minimum price {self.min_price.value():.2f} EUR"
+            search_terms.append(
+                f"minimum price "
+                f"{self.min_price.value():.2f} EUR"
             )
 
         if self.max_price.value() < 100000:
-            terms.append(
-                f"maximum price {self.max_price.value():.2f} EUR"
+            search_terms.append(
+                f"maximum price "
+                f"{self.max_price.value():.2f} EUR"
             )
 
         return {
@@ -507,24 +544,33 @@ class VinylFinder(QMainWindow):
             "catalog": catalog,
             "year": year,
             "format": record_format,
-            "query": " ".join(terms),
+            "condition": condition,
+            "query": " ".join(search_terms),
         }
 
     def enabled_sources(self):
         with connect_db() as conn:
             return conn.execute(
-                "SELECT * FROM sources "
-                "WHERE enabled = 1 ORDER BY name"
+                """
+                SELECT *
+                FROM sources
+                WHERE enabled = 1
+                ORDER BY name
+                """
             ).fetchall()
 
     def record_search(self, query):
         with connect_db() as conn:
             conn.execute(
-                "INSERT INTO searches (query, created_at) "
-                "VALUES (?, ?)",
+                """
+                INSERT INTO searches (query, created_at)
+                VALUES (?, ?)
+                """,
                 (
                     query,
-                    datetime.now().isoformat(timespec="seconds"),
+                    datetime.now().isoformat(
+                        timespec="seconds"
+                    ),
                 ),
             )
 
@@ -533,122 +579,38 @@ class VinylFinder(QMainWindow):
     def search_sources(self):
         parts = self.current_query_parts()
 
-        if not parts["query"]:
+        # De prijs- en conditiefilters worden niet automatisch
+        # door iedere website ondersteund. Ze blijven onderdeel
+        # van de algemene zoektekst, waar van toepassing.
+        query = parts["query"]
+
+        if not query:
             QMessageBox.information(
                 self,
                 "Search",
-                "Enter at least an artist or title.",
+                "Enter at least one search criterion.",
             )
             return
 
-        self.product_table.hide()
-        self.results_table.show()
-        self.results_table.setRowCount(0)
+        sources = self.enabled_sources()
 
-        self.record_search(parts["query"])
-
-        for source in self.enabled_sources():
-            url = build_search_url(
-                source["url_template"],
-                parts["query"],
-                parts["artist"],
-                parts["title"],
-                parts["album"],
-                parts["year"],
-                    parts["format"],
-            )
-
-            if not valid_http_url(url):
-                continue
-
-            row = self.results_table.rowCount()
-            self.results_table.insertRow(row)
-
-            self.results_table.setItem(
-                row, 0, QTableWidgetItem(source["name"])
-            )
-
-            url_item = QTableWidgetItem(url)
-            url_item.setToolTip(url)
-            self.results_table.setItem(row, 1, url_item)
-
-            button = QPushButton("Open Search")
-            button.clicked.connect(
-                lambda checked=False, target=url:
-                    webbrowser.open(target)
-            )
-            self.results_table.setCellWidget(row, 2, button)
-
-        self.statusBar().showMessage(
-            f"Prepared {self.results_table.rowCount()} search destinations."
-        )
-
-    # ---------------------------------------------------------
-    # SEARCH PRODUCTS
-    # ---------------------------------------------------------
-
-    def search_products(self):
-        parts = self.current_query_parts()
-
-        token = os.environ.get("DISCOGS_TOKEN", "").strip()
-
-        if not token:
-            QMessageBox.warning(
-                self,
-                "Discogs API",
-                "Geen Discogs API-token gevonden.\n\n"
-                "Stel eerst de omgevingsvariabele "
-                "DISCOGS_TOKEN in Windows in."
-            )
-            return
-
-        search_fields = (
-            "artist", "title", "album",
-            "label", "catalog", "year"
-        )
-
-        if not any(parts.get(key, "").strip()
-                   for key in search_fields):
+        if not sources:
             QMessageBox.information(
                 self,
-                "Search Products",
-                "Vul minstens één zoekcriterium in."
+                "Search",
+                "No enabled sources are configured.\n\n"
+                "Open Manage Sources and enable a website.",
             )
             return
 
-        query = " ".join(
-            parts.get(key, "").strip()
-            for key in search_fields
-            if parts.get(key, "").strip()
-        )
-
-        self.results_table.hide()
-        self.product_table.show()
-        self.product_table.setRowCount(0)
-        self.product_table.setColumnCount(3)
-        self.product_table.setHorizontalHeaderLabels([
-            "Website / Store",
-            "Product / Aanbieding",
-            "Action",
-        ])
-
-        self.product_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.product_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch
-        )
-        self.product_table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.ResizeToContents
-        )
-
         progress = QProgressDialog(
-            "Searching Discogs for releases with current offers...",
+            "Searching...",
             "",
             0,
             0,
             self,
         )
+
         progress.setWindowTitle("VinylFinder")
         progress.setWindowModality(
             Qt.WindowModality.ApplicationModal
@@ -657,245 +619,89 @@ class VinylFinder(QMainWindow):
         progress.setMinimumDuration(0)
         progress.setAutoClose(False)
         progress.setAutoReset(False)
-        progress.show()
 
+        progress.show()
         QApplication.processEvents()
 
-        api_headers = {
-            "User-Agent": "VinylFinder/0.2.0",
-            "Authorization": f"Discogs token={token}",
-            "Accept": "application/json",
-        }
-
-        api_base = "https://api.discogs.com"
-
-        found = 0
-        errors = []
-        seen_ids = set()
-
         try:
-            params = {
-                "type": "release",
-                "per_page": 20,
-                "page": 1,
-            }
+            self.results_table.setRowCount(0)
 
-            # Gebruik de afzonderlijke Discogs-zoekvelden.
-            if parts.get("artist"):
-                params["artist"] = parts["artist"]
+            parts_for_url = dict(parts)
 
-            if parts.get("title"):
-                params["release_title"] = parts["title"]
+            # Geef winkels ook de ingevulde aanvullende
+            # criteria mee in de algemene query.
+            parts_for_url["query"] = query
 
-            if parts.get("album"):
-                params["release_title"] = (
-                    parts["album"]
-                    if not parts.get("title")
-                    else parts["title"] + " " + parts["album"]
+            for source in sources:
+                url = build_search_url(
+                    source["url_template"],
+                    parts_for_url["query"],
+                    parts_for_url["artist"],
+                    parts_for_url["title"],
+                    parts_for_url["album"],
+                    parts_for_url["year"],
+                    parts_for_url["format"],
                 )
 
-            if parts.get("label"):
-                params["label"] = parts["label"]
-
-            if parts.get("catalog"):
-                params["catno"] = parts["catalog"]
-
-            if parts.get("year"):
-                params["year"] = parts["year"]
-
-            record_format = self.format_combo.currentText()
-
-            if record_format != "Any vinyl format":
-                params["format"] = "Vinyl"
-
-            response = requests.get(
-                f"{api_base}/database/search",
-                params=params,
-                headers=api_headers,
-                timeout=25,
-            )
-            response.raise_for_status()
-
-            data = response.json()
-            releases = data.get("results", [])
-
-            for release in releases:
-                QApplication.processEvents()
-
-                release_id = release.get("id")
-
-                if not release_id or release_id in seen_ids:
+                if not valid_http_url(url):
                     continue
 
-                seen_ids.add(release_id)
+                row = self.results_table.rowCount()
+                self.results_table.insertRow(row)
 
-                # Controleer of er actuele Marketplace-aanbiedingen
-                # voor deze release bestaan.
-                try:
-                    stats_response = requests.get(
-                        f"{api_base}/marketplace/stats/"
-                        f"{release_id}",
-                        params={"curr_abbr": "EUR"},
-                        headers=api_headers,
-                        timeout=20,
-                    )
-                    stats_response.raise_for_status()
-                    stats = stats_response.json()
-
-                except requests.RequestException as exc:
-                    errors.append(
-                        f"Release {release_id}: {exc}"
-                    )
-                    continue
-
-                if not stats:
-                    continue
-
-                number_for_sale = stats.get("num_for_sale", 0)
-                lowest_price = stats.get("lowest_price")
-
-                try:
-                    number_for_sale = int(number_for_sale or 0)
-                except (ValueError, TypeError):
-                    number_for_sale = 0
-
-                # Geen aanbiedingen betekent geen resultaat.
-                if number_for_sale <= 0 or not lowest_price:
-                    continue
-
-                try:
-                    price = float(lowest_price["value"])
-                except (KeyError, TypeError, ValueError):
-                    continue
-
-                # Pas de ingestelde prijsgrenzen toe op de
-                # gerapporteerde laagste aanbiedingsprijs.
-                if price < self.min_price.value():
-                    continue
-
-                if price > self.max_price.value():
-                    continue
-
-                title = release.get("title", "").strip()
-
-                if not title:
-                    continue
-
-                # Link naar de release op Discogs.
-                product_url = (
-                    f"https://www.discogs.com/sell/release/"
-                    f"{release_id}"
+                self.results_table.setItem(
+                    row,
+                    0,
+                    QTableWidgetItem(source["name"]),
                 )
 
-                if not valid_http_url(product_url):
-                    continue
+                url_item = QTableWidgetItem(url)
+                url_item.setToolTip(url)
 
-                row = self.product_table.rowCount()
-                self.product_table.insertRow(row)
-
-                self.product_table.setItem(
-                    row, 0, QTableWidgetItem("Discogs")
+                self.results_table.setItem(
+                    row, 1, url_item
                 )
 
-                product_text = (
-                    f"{title} | Vanaf "
-                    f"{price:.2f} EUR | "
-                    f"{number_for_sale} aanbieding(en)"
-                )
-
-                self.product_table.setItem(
-                    row, 1, QTableWidgetItem(product_text)
-                )
-
-                open_btn = QPushButton("Bekijk aanbiedingen")
-                open_btn.product_url = product_url
-                open_btn.clicked.connect(
-                    lambda checked=False, target=product_url:
+                button = QPushButton("Open Search")
+                button.clicked.connect(
+                    lambda checked=False, target=url:
                         webbrowser.open(target)
                 )
 
-                self.product_table.setCellWidget(
-                    row, 2, open_btn
+                self.results_table.setCellWidget(
+                    row, 2, button
                 )
-
-                found += 1
 
             self.record_search(query)
 
-            if errors:
-                self.statusBar().showMessage(
-                    f"{found} resultaten; "
-                    f"{len(errors)} API-aanvragen mislukt."
-                )
-            else:
-                self.statusBar().showMessage(
-                    f"{found} releases met aanbiedingen gevonden."
-                )
+            count = self.results_table.rowCount()
 
-            if found == 0:
+            self.statusBar().showMessage(
+                f"Prepared {count} search destinations."
+            )
+
+            if count == 0:
                 QMessageBox.information(
                     self,
-                    "Search Products",
-                    "Geen releases met actuele aanbiedingen "
-                    "gevonden binnen de ingestelde prijsgrenzen.\n\n"
-                    "Controleer je zoekcriteria en probeer opnieuw."
+                    "Search",
+                    "No valid search destinations were prepared.\n\n"
+                    "Check the URL templates in Manage Sources.",
                 )
 
-            if errors:
-                QMessageBox.warning(
-                    self,
-                    "Discogs API",
-                    f"{len(errors)} aanvraag/aanvragen "
-                    "voor Marketplace-statistieken zijn mislukt.\n\n"
-                    "Controleer je internetverbinding en probeer "
-                    "het later opnieuw."
-                )
-
-        except requests.HTTPError as exc:
-            status = (
-                exc.response.status_code
-                if exc.response is not None
-                else "onbekend"
-            )
-
-            if status in (401, 403):
-                message = (
-                    "Discogs heeft de API-aanvraag geweigerd. "
-                    "Controleer je token en API-toegang."
-                )
-            elif status == 429:
-                message = (
-                    "De Discogs API-aanvraaglimiet is bereikt. "
-                    "Wacht even en probeer opnieuw."
-                )
-            else:
-                message = (
-                    f"Discogs gaf HTTP-status {status} terug."
-                )
-
-            self.statusBar().showMessage("Discogs search failed.")
-
-            QMessageBox.warning(
-                self, "Discogs API", message
-            )
-
-        except (requests.RequestException, ValueError) as exc:
-            self.statusBar().showMessage("Discogs search failed.")
-
+        except Exception as exc:
             QMessageBox.warning(
                 self,
-                "Discogs API",
-                f"De zoekopdracht is mislukt:\n{exc}"
+                "Search Error",
+                f"Could not prepare the searches:\n{exc}",
             )
 
         finally:
             progress.close()
             progress.deleteLater()
 
-    
-    # ---------------------------------------------------------
-    # FILTERS
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
+    # CLEAR FILTERS
+    # -----------------------------------------------------
 
     def clear_filters(self):
         for widget in (
@@ -914,29 +720,31 @@ class VinylFinder(QMainWindow):
         self.max_price.setValue(100000)
 
         self.results_table.setRowCount(0)
-        self.product_table.setRowCount(0)
-
-        self.results_table.show()
-        self.product_table.hide()
 
         self.statusBar().showMessage("Filters cleared.")
 
-    # ---------------------------------------------------------
-    # SOURCES
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
+    # MANAGE SOURCES TAB
+    # -----------------------------------------------------
 
     def create_sources_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
 
         self.sources_table = QTableWidget(0, 3)
+
         self.sources_table.setHorizontalHeaderLabels([
-            "Name", "Search URL Template", "Enabled"
+            "Name",
+            "Search URL Template",
+            "Enabled",
         ])
+
         self.configure_table(self.sources_table)
+
         self.sources_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
         )
+
         layout.addWidget(self.sources_table)
 
         buttons = QHBoxLayout()
@@ -956,6 +764,7 @@ class VinylFinder(QMainWindow):
             buttons.addWidget(button)
 
         layout.addLayout(buttons)
+
         return page
 
     def selected_source_id(self):
@@ -988,15 +797,21 @@ class VinylFinder(QMainWindow):
 
             name_item = QTableWidgetItem(source["name"])
             name_item.setData(
-                Qt.ItemDataRole.UserRole, source["id"]
+                Qt.ItemDataRole.UserRole,
+                source["id"],
             )
 
             self.sources_table.setItem(row, 0, name_item)
+
             self.sources_table.setItem(
-                row, 1, QTableWidgetItem(source["url_template"])
+                row,
+                1,
+                QTableWidgetItem(source["url_template"]),
             )
+
             self.sources_table.setItem(
-                row, 2,
+                row,
+                2,
                 QTableWidgetItem(
                     "Yes" if source["enabled"] else "No"
                 ),
@@ -1013,10 +828,14 @@ class VinylFinder(QMainWindow):
         try:
             with connect_db() as conn:
                 conn.execute(
-                    "INSERT INTO sources "
-                    "(name, url_template, enabled) VALUES (?, ?, ?)",
+                    """
+                    INSERT INTO sources
+                        (name, url_template, enabled)
+                    VALUES (?, ?, ?)
+                    """,
                     (name, url, enabled),
                 )
+
         except sqlite3.IntegrityError as exc:
             QMessageBox.warning(
                 self, "Source Error", str(exc)
@@ -1030,7 +849,9 @@ class VinylFinder(QMainWindow):
 
         if source_id is None:
             QMessageBox.information(
-                self, "Edit Source", "Select a source first."
+                self,
+                "Edit Source",
+                "Select a source first.",
             )
             return
 
@@ -1052,8 +873,11 @@ class VinylFinder(QMainWindow):
 
         with connect_db() as conn:
             conn.execute(
-                "UPDATE sources SET name=?, url_template=?, "
-                "enabled=? WHERE id=?",
+                """
+                UPDATE sources
+                SET name = ?, url_template = ?, enabled = ?
+                WHERE id = ?
+                """,
                 (name, url, enabled, source_id),
             )
 
@@ -1070,8 +894,11 @@ class VinylFinder(QMainWindow):
 
         with connect_db() as conn:
             conn.execute(
-                "UPDATE sources SET enabled = 1 - enabled "
-                "WHERE id = ?",
+                """
+                UPDATE sources
+                SET enabled = 1 - enabled
+                WHERE id = ?
+                """,
                 (source_id,),
             )
 
@@ -1125,18 +952,21 @@ class VinylFinder(QMainWindow):
                 encoding="utf-8-sig",
                 newline="",
             ) as csv_file:
+
                 sample = csv_file.read(4096)
                 csv_file.seek(0)
 
                 try:
                     dialect = csv.Sniffer().sniff(
-                        sample, delimiters=",;\t"
+                        sample,
+                        delimiters=",;\t",
                     )
                 except csv.Error:
                     dialect = csv.excel
 
                 reader = csv.DictReader(
-                    csv_file, dialect=dialect
+                    csv_file,
+                    dialect=dialect,
                 )
 
                 if not reader.fieldnames:
@@ -1152,7 +982,9 @@ class VinylFinder(QMainWindow):
                     for name in reader.fieldnames
                 ]
 
-                if not {"name", "url_template"}.issubset(
+                required = {"name", "url_template"}
+
+                if not required.issubset(
                     set(reader.fieldnames)
                 ):
                     QMessageBox.warning(
@@ -1168,6 +1000,7 @@ class VinylFinder(QMainWindow):
                         name = (
                             item.get("name") or ""
                         ).strip()
+
                         template = (
                             item.get("url_template") or ""
                         ).strip()
@@ -1180,22 +1013,7 @@ class VinylFinder(QMainWindow):
                             invalid += 1
                             continue
 
-                        test_url = template
-
-                        for key, value in {
-                            "{query}": "test",
-                            "{artist}": "artist",
-                            "{title}": "title",
-                            "{album}": "album",
-                            "{year}": "2020",
-                            "{format}": "vinyl",
-                            "{query_params}": "q=test",
-                        }.items():
-                            test_url = test_url.replace(
-                                key, value
-                            )
-
-                        if not valid_http_url(test_url):
+                        if not validate_template(template):
                             invalid += 1
                             continue
 
@@ -1212,8 +1030,10 @@ class VinylFinder(QMainWindow):
                             continue
 
                         exists = conn.execute(
-                            "SELECT 1 FROM sources "
-                            "WHERE lower(name)=lower(?)",
+                            """
+                            SELECT 1 FROM sources
+                            WHERE lower(name) = lower(?)
+                            """,
                             (name,),
                         ).fetchone()
 
@@ -1222,9 +1042,11 @@ class VinylFinder(QMainWindow):
                             continue
 
                         conn.execute(
-                            "INSERT INTO sources "
-                            "(name, url_template, enabled) "
-                            "VALUES (?, ?, ?)",
+                            """
+                            INSERT INTO sources
+                                (name, url_template, enabled)
+                            VALUES (?, ?, ?)
+                            """,
                             (name, template, enabled),
                         )
 
@@ -1247,23 +1069,26 @@ class VinylFinder(QMainWindow):
                 f"Could not import the CSV file:\n{exc}",
             )
 
-    # ---------------------------------------------------------
-    # FAVORITES
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
+    # FAVORITES TAB
+    # -----------------------------------------------------
 
     def create_favorites_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
 
         self.favorites_table = QTableWidget(0, 3)
+
         self.favorites_table.setHorizontalHeaderLabels([
             "Title", "URL", "Notes"
         ])
+
         self.configure_table(self.favorites_table)
 
         self.favorites_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
         )
+
         self.favorites_table.horizontalHeader().setSectionResizeMode(
             2, QHeaderView.ResizeMode.Stretch
         )
@@ -1272,20 +1097,21 @@ class VinylFinder(QMainWindow):
 
         buttons = QHBoxLayout()
 
+        add_btn = QPushButton("Add Favorite")
+        add_btn.clicked.connect(self.add_favorite)
+
         open_btn = QPushButton("Open Selected URL")
         open_btn.clicked.connect(self.open_selected_favorite)
 
         delete_btn = QPushButton("Remove Favorite")
         delete_btn.clicked.connect(self.delete_favorite)
 
-        add_btn = QPushButton("Add Current Product")
-        add_btn.clicked.connect(self.add_current_favorite)
-
         buttons.addWidget(add_btn)
         buttons.addWidget(open_btn)
         buttons.addWidget(delete_btn)
 
         layout.addLayout(buttons)
+
         return page
 
     def refresh_favorites(self):
@@ -1294,7 +1120,10 @@ class VinylFinder(QMainWindow):
 
         with connect_db() as conn:
             rows = conn.execute(
-                "SELECT * FROM favorites ORDER BY created_at DESC"
+                """
+                SELECT * FROM favorites
+                ORDER BY created_at DESC
+                """
             ).fetchall()
 
         self.favorites_table.setRowCount(0)
@@ -1305,15 +1134,19 @@ class VinylFinder(QMainWindow):
 
             title = QTableWidgetItem(fav["title"])
             title.setData(
-                Qt.ItemDataRole.UserRole, fav["id"]
+                Qt.ItemDataRole.UserRole,
+                fav["id"],
             )
 
             self.favorites_table.setItem(row, 0, title)
+
             self.favorites_table.setItem(
                 row, 1, QTableWidgetItem(fav["url"])
             )
+
             self.favorites_table.setItem(
-                row, 2, QTableWidgetItem(fav["notes"] or "")
+                row, 2,
+                QTableWidgetItem(fav["notes"] or ""),
             )
 
     def selected_favorite_id(self):
@@ -1329,54 +1162,37 @@ class VinylFinder(QMainWindow):
             if item else None
         )
 
-    def add_current_favorite(self):
-        row = self.product_table.currentRow()
+    def add_favorite(self):
+        dialog = FavoriteDialog(self)
 
-        if row < 0:
-            QMessageBox.information(
-                self,
-                "Favorites",
-                "Select a product in Found Products first.",
-            )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
-        source_item = self.product_table.item(row, 0)
-        title_item = self.product_table.item(row, 1)
-        button = self.product_table.cellWidget(row, 2)
-
-        if not source_item or not title_item or not button:
-            return
-
-        # The Open Product button captures the target URL.
-        # Store the URL explicitly on the button when adding results.
-        product_url = getattr(button, "product_url", "")
-
-        if not valid_http_url(product_url):
-            QMessageBox.warning(
-                self,
-                "Favorites",
-                "The selected product URL is unavailable.",
-            )
-            return
+        title, url, notes = dialog.values()
 
         try:
             with connect_db() as conn:
                 conn.execute(
-                    "INSERT INTO favorites "
-                    "(title, url, notes, created_at) "
-                    "VALUES (?, ?, ?, ?)",
+                    """
+                    INSERT INTO favorites
+                        (title, url, notes, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
                     (
-                        title_item.text(),
-                        product_url,
-                        source_item.text(),
-                        datetime.now().isoformat(timespec="seconds"),
+                        title,
+                        url,
+                        notes,
+                        datetime.now().isoformat(
+                            timespec="seconds"
+                        ),
                     ),
                 )
+
         except sqlite3.IntegrityError:
             QMessageBox.information(
                 self,
                 "Favorites",
-                "This product is already a favorite.",
+                "This URL is already a favorite.",
             )
             return
 
@@ -1386,6 +1202,11 @@ class VinylFinder(QMainWindow):
         row = self.favorites_table.currentRow()
 
         if row < 0:
+            QMessageBox.information(
+                self,
+                "Favorites",
+                "Select a favorite first.",
+            )
             return
 
         item = self.favorites_table.item(row, 1)
@@ -1404,6 +1225,15 @@ class VinylFinder(QMainWindow):
             )
             return
 
+        answer = QMessageBox.question(
+            self,
+            "Remove Favorite",
+            "Remove the selected favorite?",
+        )
+
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
         with connect_db() as conn:
             conn.execute(
                 "DELETE FROM favorites WHERE id = ?",
@@ -1412,19 +1242,22 @@ class VinylFinder(QMainWindow):
 
         self.refresh_favorites()
 
-    # ---------------------------------------------------------
-    # SEARCH HISTORY
-    # ---------------------------------------------------------
+    # -----------------------------------------------------
+    # SEARCH HISTORY TAB
+    # -----------------------------------------------------
 
     def create_history_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
 
         self.history_table = QTableWidget(0, 2)
+
         self.history_table.setHorizontalHeaderLabels([
             "Search Query", "Date / Time"
         ])
+
         self.configure_table(self.history_table)
+
         self.history_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch
         )
@@ -1443,6 +1276,7 @@ class VinylFinder(QMainWindow):
         buttons.addWidget(clear_btn)
 
         layout.addLayout(buttons)
+
         return page
 
     def refresh_history(self):
@@ -1451,7 +1285,11 @@ class VinylFinder(QMainWindow):
 
         with connect_db() as conn:
             rows = conn.execute(
-                "SELECT * FROM searches ORDER BY id DESC LIMIT 500"
+                """
+                SELECT * FROM searches
+                ORDER BY id DESC
+                LIMIT 500
+                """
             ).fetchall()
 
         self.history_table.setRowCount(0)
@@ -1462,12 +1300,16 @@ class VinylFinder(QMainWindow):
 
             query_item = QTableWidgetItem(item["query"])
             query_item.setData(
-                Qt.ItemDataRole.UserRole, item["id"]
+                Qt.ItemDataRole.UserRole,
+                item["id"],
             )
 
             self.history_table.setItem(row, 0, query_item)
+
             self.history_table.setItem(
-                row, 1, QTableWidgetItem(item["created_at"])
+                row,
+                1,
+                QTableWidgetItem(item["created_at"]),
             )
 
     def repeat_history_search(self):
@@ -1487,6 +1329,7 @@ class VinylFinder(QMainWindow):
             return
 
         query = item.text()
+
         self.clear_filters()
         self.artist_edit.setText(query)
         self.tabs.setCurrentIndex(0)
@@ -1508,6 +1351,10 @@ class VinylFinder(QMainWindow):
         self.refresh_history()
 
 
+# ---------------------------------------------------------
+# APPLICATION ENTRY POINT
+# ---------------------------------------------------------
+
 def main():
     init_db()
 
@@ -1519,6 +1366,7 @@ def main():
     window.showMaximized()
 
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
