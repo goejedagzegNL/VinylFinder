@@ -3,6 +3,8 @@ import sqlite3
 import csv
 import re
 import webbrowser
+import urllib.request
+import urllib.error
 
 from pathlib import Path
 from datetime import datetime
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QFormLayout,
     QLineEdit,
+    QComboBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -34,7 +37,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "VinylFinder"
-APP_VERSION = "0.3.7"
+APP_VERSION = "0.3.8"
 
 DATA_DIR = Path.home() / "AppData" / "Local" / APP_NAME
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,6 +61,82 @@ DEFAULT_SOURCES = [
         1,
     ),
 ]
+
+
+# Europese landen voor de landenkeuzelijst. De landcode wordt ook gebruikt
+# om waar mogelijk een lokale eBay-site te selecteren.
+EUROPEAN_COUNTRIES = [
+    ("Albania", "AL"), ("Andorra", "AD"), ("Armenia", "AM"),
+    ("Austria", "AT"), ("Azerbaijan", "AZ"), ("Belarus", "BY"),
+    ("Belgium", "BE"), ("Bosnia and Herzegovina", "BA"),
+    ("Bulgaria", "BG"), ("Croatia", "HR"), ("Cyprus", "CY"),
+    ("Czechia", "CZ"), ("Denmark", "DK"), ("Estonia", "EE"),
+    ("Finland", "FI"), ("France", "FR"), ("Georgia", "GE"),
+    ("Germany", "DE"), ("Greece", "GR"), ("Hungary", "HU"),
+    ("Iceland", "IS"), ("Ireland", "IE"), ("Italy", "IT"),
+    ("Kosovo", "XK"), ("Latvia", "LV"), ("Liechtenstein", "LI"),
+    ("Lithuania", "LT"), ("Luxembourg", "LU"), ("Malta", "MT"),
+    ("Moldova", "MD"), ("Monaco", "MC"), ("Montenegro", "ME"),
+    ("Netherlands", "NL"), ("North Macedonia", "MK"),
+    ("Norway", "NO"), ("Poland", "PL"), ("Portugal", "PT"),
+    ("Romania", "RO"), ("Russia", "RU"), ("San Marino", "SM"),
+    ("Serbia", "RS"), ("Slovakia", "SK"), ("Slovenia", "SI"),
+    ("Spain", "ES"), ("Sweden", "SE"), ("Switzerland", "CH"),
+    ("Turkey", "TR"), ("Ukraine", "UA"),
+    ("United Kingdom", "GB"), ("Vatican City", "VA"),
+]
+
+EBAY_DOMAINS = {
+    "AT": "www.ebay.at", "BE": "www.ebay.be", "CH": "www.ebay.ch",
+    "DE": "www.ebay.de", "ES": "www.ebay.es", "FR": "www.ebay.fr",
+    "IE": "www.ebay.ie", "IT": "www.ebay.it", "NL": "www.ebay.nl",
+    "PL": "www.ebay.pl", "UK": "www.ebay.co.uk", "GB": "www.ebay.co.uk",
+}
+
+# Curated local candidates. Each template passes a real HTTP reachability test
+# before it is exported; the query placeholder is always filled with a sample.
+# A successful HTTP response confirms reachability and URL construction, not
+# that every shop's internal search engine returns relevant products.
+COUNTRY_SHOP_CANDIDATES = {
+    "Netherlands": [
+        ("Concerto", "https://www.concerto.nl/search?query={query}"),
+        ("Platomania", "https://www.platomania.nl/search?search={query}"),
+    ],
+    "Belgium": [
+        ("Music Mania Records", "https://musicmaniarecords.be/search?q={query}"),
+    ],
+    "Germany": [
+        ("HHV Records", "https://www.hhv.de/en/records/search?q={query}"),
+    ],
+    "France": [
+        ("Fnac France", "https://www.fnac.com/SearchResult/ResultList.aspx?Search={query}"),
+        ("Bigwax", "https://bigwax.io/search?type=product&q={query}"),
+    ],
+    "United Kingdom": [
+        ("Juno Records", "https://www.juno.co.uk/search/?q%5Ball%5D%5Ball%5D={query}"),
+        ("Rough Trade", "https://www.roughtrade.com/search?q={query}"),
+        ("Norman Records", "https://www.normanrecords.com/search?search={query}"),
+    ],
+    "Ireland": [
+        ("Golden Discs", "https://goldendiscs.ie/search?q={query}"),
+    ],
+    "Denmark": [
+        ("iMusic", "https://imusic.dk/search?query={query}"),
+    ],
+    "Sweden": [
+        ("Bengans", "https://www.bengans.com/search?search={query}"),
+    ],
+    "Italy": [
+        ("Radiation Records", "https://www.radiationrecords.net/search?q={query}"),
+    ],
+    "Spain": [
+        ("Fnac España", "https://www.fnac.es/SearchResult/ResultList.aspx?Search={query}"),
+        ("Revólver Records", "https://www.revolverrecords.com/search?q={query}"),
+    ],
+    "Poland": [
+        ("Side One", "https://sideone.pl/search?controller=search&s={query}"),
+    ],
+}
 
 
 # ---------------------------------------------------------
@@ -692,6 +771,18 @@ class VinylFinder(QMainWindow):
 
         layout.addWidget(self.sources_table)
 
+        country_row = QHBoxLayout()
+        country_row.addWidget(QLabel("Generate webshop list for country:"))
+        self.country_picklist = QComboBox()
+        for country_name, country_code in EUROPEAN_COUNTRIES:
+            self.country_picklist.addItem(country_name, country_code)
+        self.country_picklist.setCurrentText("Netherlands")
+        country_row.addWidget(self.country_picklist, 1)
+        generate_country_btn = QPushButton("Generate Country CSV")
+        generate_country_btn.clicked.connect(self.generate_country_sources_csv)
+        country_row.addWidget(generate_country_btn)
+        layout.addLayout(country_row)
+
         buttons = QHBoxLayout()
 
         actions = [
@@ -922,6 +1013,138 @@ class VinylFinder(QMainWindow):
             )
 
         self.refresh_sources()
+
+    def generate_country_sources_csv(self):
+        country = self.country_picklist.currentText()
+        country_code = self.country_picklist.currentData()
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            f"Save tested webshop list for {country}",
+            f"VinylFinder_{country.replace(' ', '_')}_sources.csv",
+            "CSV files (*.csv)",
+        )
+        if not file_path:
+            return
+        if not file_path.lower().endswith(".csv"):
+            file_path += ".csv"
+
+        ebay_domain = EBAY_DOMAINS.get(country_code, "www.ebay.com")
+        candidates = [
+            ("Discogs", "https://www.discogs.com/search/?q={query}&type=all"),
+            ("eBay", f"https://{ebay_domain}/sch/i.html?_nkw={{query}}"),
+            ("Bandcamp", "https://bandcamp.com/search?q={query}"),
+        ]
+        candidates.extend(COUNTRY_SHOP_CANDIDATES.get(country, []))
+
+        # Avoid duplicate names and duplicate templates in the output.
+        unique_candidates = []
+        seen = set()
+        for name, template in candidates:
+            key = (name.casefold(), template.casefold())
+            if key not in seen:
+                seen.add(key)
+                unique_candidates.append((name, template))
+
+        test_query = "vinyl test"
+        passed_rows = []
+        failed = []
+        tested_at = datetime.now().isoformat(timespec="seconds")
+
+        progress = QProgressDialog(
+            "Testing website search URLs...",
+            "Cancel",
+            0,
+            len(unique_candidates),
+            self,
+        )
+        progress.setWindowTitle("Generate Country CSV")
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        progress.show()
+        QApplication.processEvents()
+        cancelled = False
+        try:
+            for candidate_index, (name, template) in enumerate(unique_candidates, start=1):
+                progress.setLabelText(f"Testing {name} ({candidate_index}/{len(unique_candidates)})...")
+                progress.setValue(candidate_index - 1)
+                QApplication.processEvents()
+                if progress.wasCanceled():
+                    cancelled = True
+                    break
+                if "{query}" not in template or not validate_template(template):
+                    failed.append((name, "invalid search template"))
+                    continue
+
+                test_url = template.replace("{query}", quote_plus(test_query))
+                request = urllib.request.Request(
+                    test_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                      "AppleWebKit/537.36 Chrome/130 Safari/537.36",
+                        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+                    },
+                    method="GET",
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        status = getattr(response, "status", 200)
+                        final_url = response.geturl()
+                        # Read a small part to ensure the response actually begins.
+                        response.read(1024)
+                    if 200 <= status < 400 and valid_http_url(final_url):
+                        passed_rows.append({
+                            "name": name,
+                            "url_template": template,
+                            "enabled": "1",
+                            "country": country,
+                            "test_query": test_query,
+                            "test_status": f"HTTP {status} OK",
+                            "test_url": test_url,
+                            "tested_at": tested_at,
+                        })
+                    else:
+                        failed.append((name, f"HTTP {status}"))
+                except Exception as exc:
+                    reason = str(exc).replace("\n", " ")[:100]
+                    failed.append((name, reason or exc.__class__.__name__))
+        finally:
+            progress.close()
+            progress.deleteLater()
+
+        fieldnames = [
+            "name", "url_template", "enabled", "country",
+            "test_query", "test_status", "test_url", "tested_at",
+        ]
+        try:
+            with open(file_path, "w", encoding="utf-8-sig", newline="") as csv_file:
+                writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(passed_rows)
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Country CSV", f"Could not save the CSV file:\n{exc}"
+            )
+            return
+
+        message = (
+            f"Country: {country}\n"
+            f"Search URLs that passed the live HTTP test: {len(passed_rows)}\n"
+            f"Candidates that failed or could not be reached: {len(failed)}\n"
+            + ("Testing was cancelled by the user.\n" if cancelled else "")
+            + "\n"
+            f"Saved CSV: {file_path}\n\n"
+            "The CSV contains the columns required by Import CSV (name, url_template, enabled) "
+            "plus test details. Import CSV ignores the extra columns."
+        )
+        if failed:
+            message += "\n\nNot exported (failed test):\n" + "\n".join(
+                f"• {name}: {reason}" for name, reason in failed[:12]
+            )
+            if len(failed) > 12:
+                message += f"\n…and {len(failed) - 12} more."
+        QMessageBox.information(self, "Country CSV Generated", message)
 
     def import_sources_csv(self):
         file_path, _ = QFileDialog.getOpenFileName(
