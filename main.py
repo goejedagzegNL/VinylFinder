@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "VinylFinder"
-APP_VERSION = "0.3.5"
+APP_VERSION = "0.3.7"
 
 DATA_DIR = Path.home() / "AppData" / "Local" / APP_NAME
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -671,19 +671,24 @@ class VinylFinder(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
 
-        self.sources_table = QTableWidget(0, 3)
+        self.sources_table = QTableWidget(0, 4)
 
         self.sources_table.setHorizontalHeaderLabels([
+            "Select",
             "Name",
             "Search URL Template",
             "Enabled",
         ])
 
         self.configure_table(self.sources_table)
+        # Klik op Yes/No in een regel om de bron direct in/uit te schakelen.
+        self.sources_table.cellClicked.connect(self.toggle_source_at_row)
 
-        self.sources_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch
-        )
+        header = self.sources_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
 
         layout.addWidget(self.sources_table)
 
@@ -713,7 +718,7 @@ class VinylFinder(QMainWindow):
         if row < 0:
             return None
 
-        item = self.sources_table.item(row, 0)
+        item = self.sources_table.item(row, 1)
 
         return (
             item.data(Qt.ItemDataRole.UserRole)
@@ -735,23 +740,32 @@ class VinylFinder(QMainWindow):
             row = self.sources_table.rowCount()
             self.sources_table.insertRow(row)
 
+            # Elke bron krijgt een selectievakje; meerdere bronnen
+            # kunnen tegelijk worden geselecteerd voor Enable / Disable.
+            check_item = QTableWidgetItem("")
+            check_item.setFlags(
+                (check_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                & ~Qt.ItemFlag.ItemIsEditable
+            )
+            check_item.setCheckState(Qt.CheckState.Unchecked)
+            self.sources_table.setItem(row, 0, check_item)
+
             name_item = QTableWidgetItem(source["name"])
             name_item.setData(
                 Qt.ItemDataRole.UserRole,
                 source["id"],
             )
-
-            self.sources_table.setItem(row, 0, name_item)
+            self.sources_table.setItem(row, 1, name_item)
 
             self.sources_table.setItem(
                 row,
-                1,
+                2,
                 QTableWidgetItem(source["url_template"]),
             )
 
             self.sources_table.setItem(
                 row,
-                2,
+                3,
                 QTableWidgetItem(
                     "Yes" if source["enabled"] else "No"
                 ),
@@ -823,13 +837,17 @@ class VinylFinder(QMainWindow):
 
         self.refresh_sources()
 
-    def toggle_source(self):
-        source_id = self.selected_source_id()
+    def toggle_source_at_row(self, row, column):
+        # Alleen klikken op de Enabled-kolom (Yes/No) wisselt de status.
+        if column != 3:
+            return
 
+        name_item = self.sources_table.item(row, 1)
+        if not name_item:
+            return
+
+        source_id = name_item.data(Qt.ItemDataRole.UserRole)
         if source_id is None:
-            QMessageBox.information(
-                self, "Sources", "Select a source first."
-            )
             return
 
         with connect_db() as conn:
@@ -840,6 +858,41 @@ class VinylFinder(QMainWindow):
                 WHERE id = ?
                 """,
                 (source_id,),
+            )
+
+        self.refresh_sources()
+
+    def toggle_source(self):
+        # Draai de status om van alle aangevinkte bronnen.
+        selected_ids = []
+        for row in range(self.sources_table.rowCount()):
+            check_item = self.sources_table.item(row, 0)
+            name_item = self.sources_table.item(row, 1)
+            if (
+                check_item
+                and check_item.checkState() == Qt.CheckState.Checked
+                and name_item
+            ):
+                source_id = name_item.data(Qt.ItemDataRole.UserRole)
+                if source_id is not None:
+                    selected_ids.append(source_id)
+
+        if not selected_ids:
+            QMessageBox.information(
+                self,
+                "Sources",
+                "Tick the checkbox next to at least one website first.",
+            )
+            return
+
+        with connect_db() as conn:
+            conn.executemany(
+                """
+                UPDATE sources
+                SET enabled = 1 - enabled
+                WHERE id = ?
+                """,
+                [(source_id,) for source_id in selected_ids],
             )
 
         self.refresh_sources()
