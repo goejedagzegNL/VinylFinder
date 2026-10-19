@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "VinylFinder"
-APP_VERSION = "0.3.8"
+APP_VERSION = "0.3.9"
 
 DATA_DIR = Path.home() / "AppData" / "Local" / APP_NAME
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -127,7 +127,7 @@ COUNTRY_SHOP_CANDIDATES = {
         ("Bengans", "https://www.bengans.com/search?search={query}"),
     ],
     "Italy": [
-        ("Radiation Records", "https://www.radiationrecords.net/search?q={query}"),
+        ("Radiation Records", "https://shop.radiationrecords.net/search?q={query}"),
     ],
     "Spain": [
         ("Fnac España", "https://www.fnac.es/SearchResult/ResultList.aspx?Search={query}"),
@@ -1048,6 +1048,7 @@ class VinylFinder(QMainWindow):
 
         test_query = "vinyl test"
         passed_rows = []
+        unverified = []
         failed = []
         tested_at = datetime.now().isoformat(timespec="seconds")
 
@@ -1106,6 +1107,24 @@ class VinylFinder(QMainWindow):
                         })
                     else:
                         failed.append((name, f"HTTP {status}"))
+                except urllib.error.HTTPError as exc:
+                    # Some large platforms block scripted requests with HTTP 403.
+                    # This is not proof that the search URL is broken in a normal
+                    # browser, so keep it in the CSV but clearly mark it unverified.
+                    if exc.code == 403:
+                        passed_rows.append({
+                            "name": name,
+                            "url_template": template,
+                            "enabled": "1",
+                            "country": country,
+                            "test_query": test_query,
+                            "test_status": "HTTP 403 - automated request blocked; verify in browser",
+                            "test_url": test_url,
+                            "tested_at": tested_at,
+                        })
+                        unverified.append((name, "HTTP 403: automated test blocked; exported for browser verification"))
+                    else:
+                        failed.append((name, f"HTTP {exc.code}: {exc.reason}"))
                 except Exception as exc:
                     reason = str(exc).replace("\n", " ")[:100]
                     failed.append((name, reason or exc.__class__.__name__))
@@ -1128,16 +1147,30 @@ class VinylFinder(QMainWindow):
             )
             return
 
+        verified_count = sum(
+            1 for row in passed_rows
+            if row["test_status"].startswith("HTTP ")
+            and "automated request blocked" not in row["test_status"]
+        )
         message = (
             f"Country: {country}\n"
-            f"Search URLs that passed the live HTTP test: {len(passed_rows)}\n"
-            f"Candidates that failed or could not be reached: {len(failed)}\n"
+            f"Search URLs verified by live HTTP response: {verified_count}\n"
+            f"URLs exported but requiring browser verification: {len(unverified)}\n"
+            f"Candidates not exported (failed test): {len(failed)}\n"
             + ("Testing was cancelled by the user.\n" if cancelled else "")
             + "\n"
             f"Saved CSV: {file_path}\n\n"
             "The CSV contains the columns required by Import CSV (name, url_template, enabled) "
-            "plus test details. Import CSV ignores the extra columns."
+            "plus test details. HTTP 403 entries are included but marked as unverified because "
+            "some websites block automated tests. Open those search URLs in a normal browser "
+            "before relying on them. Import CSV ignores the extra test columns."
         )
+        if unverified:
+            message += "\n\nExported but not verified in browser:\n" + "\n".join(
+                f"• {name}: {reason}" for name, reason in unverified[:12]
+            )
+            if len(unverified) > 12:
+                message += f"\n…and {len(unverified) - 12} more."
         if failed:
             message += "\n\nNot exported (failed test):\n" + "\n".join(
                 f"• {name}: {reason}" for name, reason in failed[:12]
