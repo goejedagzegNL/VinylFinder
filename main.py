@@ -378,6 +378,33 @@ class VinylFinder(QMainWindow):
             QAbstractItemView.EditTrigger.NoEditTriggers
         )
         table.setAlternatingRowColors(True)
+        # Use explicit high-contrast colors so table rows remain readable
+        # regardless of the Windows theme or system accent color.
+        table.setStyleSheet("""
+            QTableWidget {
+                background-color: #ffffff;
+                alternate-background-color: #f0f3f7;
+                color: #202124;
+                gridline-color: #c7cdd4;
+                selection-background-color: #c7e3ff;
+                selection-color: #111111;
+            }
+            QTableWidget::item {
+                color: #202124;
+                padding: 4px;
+            }
+            QTableWidget::item:selected {
+                background-color: #c7e3ff;
+                color: #111111;
+            }
+            QHeaderView::section {
+                background-color: #e2e7ed;
+                color: #202124;
+                padding: 5px;
+                border: 1px solid #c7cdd4;
+                font-weight: bold;
+            }
+        """)
 
         table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.ResizeToContents
