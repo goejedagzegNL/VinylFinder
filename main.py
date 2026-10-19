@@ -1,12 +1,11 @@
 
 import sys
-import os
 import sqlite3
 import csv
 import json
 import re
 import webbrowser
-import html
+
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import (
@@ -21,7 +20,7 @@ from urllib.parse import (
 import requests
 from bs4 import BeautifulSoup
 
-from PySide6.QtCore import Qt, QTimer, QThread, Signal
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -49,23 +48,11 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "VinylFinder"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.2.0"
 
-if os.name == "nt":
-    DATA_DIR = Path(
-        os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
-    ) / APP_NAME
-else:
-    DATA_DIR = Path.home() / ".local" / "share" / APP_NAME
-
+DATA_DIR = Path.home() / "AppData" / "Local" / APP_NAME
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "vinylfinder.db"
-
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/131.0.0.0 Safari/537.36"
-)
 
 DEFAULT_SOURCES = [
     (
@@ -85,48 +72,63 @@ DEFAULT_SOURCES = [
     ),
 ]
 
-ACTION_TERMS = {
-    "add to cart", "add to bag", "buy now", "shop now",
-    "checkout", "view cart", "view basket", "login", "log in",
-    "sign in", "register", "account", "search", "zoeken",
-    "next page", "previous", "continue shopping",
-    "proceed to checkout", "home", "contact", "about",
-    "privacy policy", "terms and conditions",
-    "toevoegen aan winkelwagen", "in winkelwagen",
-    "winkelwagen", "bestellen", "afrekenen",
-    "verder winkelen", "volgende", "vorige",
-}
-
-EXCLUDED_URL_PARTS = (
-    "/account", "/cart", "/basket", "/checkout",
-    "/login", "/register", "/wishlist", "/privacy",
-    "/terms", "/contact",
+ACTION_TERMS = (
+    "toevoegen aan winkelwagen",
+    "in winkelwagen",
+    "winkelwagen",
+    "add to cart",
+    "add to bag",
+    "buy now",
+    "shop now",
+    "checkout",
+    "view cart",
+    "view basket",
+    "naar de kassa",
+    "bestellen",
+    "afrekenen",
+    "verder winkelen",
+    "login",
+    "log in",
+    "sign in",
+    "register",
+    "account",
+    "search",
+    "zoeken",
+    "volgende",
+    "previous",
+    "next page",
+    "add to wishlist",
+    "toevoegen aan verlanglijst",
+    "continue shopping",
+    "proceed to checkout",
 )
 
-FORMAT_OPTIONS = [
-    "Any format",
-    "Vinyl",
-    "LP",
-    "7-inch single",
-    "10-inch",
-    "12-inch single",
-    "Box set",
-    "CD",
-    "Cassette",
-]
+EXCLUDED_URL_PARTS = (
+    "/search",
+    "/zoeken",
+    "/zoek/",
+    "/account",
+    "/cart",
+    "/basket",
+    "/winkelwagen",
+    "/checkout",
+    "/login",
+    "/register",
+    "/wishlist",
+)
 
-CONDITION_OPTIONS = [
-    "Any condition",
-    "New",
-    "Near Mint",
-    "Very Good Plus",
-    "Very Good",
-    "Good",
-]
+DIGITAL_TERMS = (
+    "digital download",
+    "mp3 download",
+    "streaming only",
+    "digital album",
+    "download code",
+    "instant download",
+)
 
 
 def connect_db():
-    conn = sqlite3.connect(DB_PATH, timeout=15)
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -176,7 +178,7 @@ def init_db():
 
 def valid_http_url(url):
     try:
-        parsed = urlparse(str(url or "").strip())
+        parsed = urlparse(url)
         return (
             parsed.scheme.lower() in ("http", "https")
             and bool(parsed.netloc)
@@ -186,7 +188,7 @@ def valid_http_url(url):
 
 
 def normalize(text):
-    text = html.unescape(str(text or "")).casefold()
+    text = str(text or "").casefold()
     text = re.sub(r"[\W_]+", " ", text, flags=re.UNICODE)
     return " ".join(text.split())
 
@@ -194,16 +196,12 @@ def normalize(text):
 def build_search_url(
     template,
     query,
-    artist="",
-    title="",
-    album="",
-    year="",
-    record_format="",
-    label="",
-    catalog="",
+    artist,
+    title,
+    album,
+    year,
+    record_format,
 ):
-    query_params = urlencode({"q": query.strip()})
-
     values = {
         "query": quote_plus(query.strip()),
         "artist": quote_plus(artist.strip()),
@@ -211,272 +209,27 @@ def build_search_url(
         "album": quote_plus(album.strip()),
         "year": quote_plus(year.strip()),
         "format": quote_plus(record_format.strip()),
-        "label": quote_plus(label.strip()),
-        "catalog": quote_plus(catalog.strip()),
-        "query_params": query_params,
+        "query_params": urlencode({"q": query.strip()}),
     }
 
     try:
         result = template.format(**values)
-        return result if valid_http_url(result) else ""
+
+        if not valid_http_url(result):
+            return ""
+
+        return result
+
     except (KeyError, ValueError, AttributeError):
         return ""
-
-
-def validate_source_template(template):
-    test_url = template
-
-    replacements = {
-        "{query}": "test",
-        "{artist}": "artist",
-        "{title}": "title",
-        "{album}": "album",
-        "{year}": "2020",
-        "{format}": "vinyl",
-        "{label}": "label",
-        "{catalog}": "ABC123",
-        "{query_params}": "q=test",
-    }
-
-    for key, value in replacements.items():
-        test_url = test_url.replace(key, value)
-
-    return valid_http_url(test_url)
-
-
-def product_link_is_plausible(title, url, query_terms):
-    title = " ".join(str(title or "").split())
-    if len(title) < 3 or not valid_http_url(url):
-        return False
-
-    normalized_title = normalize(title)
-    normalized_url = normalize(url)
-    parsed = urlparse(url)
-
-    if any(
-        part in parsed.path.casefold()
-        for part in EXCLUDED_URL_PARTS
-    ):
-        return False
-
-    if normalized_title in ACTION_TERMS:
-        return False
-
-    if any(
-        action in normalized_title
-        for action in (
-            "add to cart", "buy now", "sign in",
-            "log in", "cookie settings",
-        )
-    ):
-        return False
-
-    # Accept candidates matching any useful query term.
-    # Do not require every field to appear in the product title.
-    useful_terms = [
-        normalize(term)
-        for term in query_terms
-        if len(normalize(term)) >= 2
-    ]
-
-    if useful_terms and not any(
-        term in normalized_title or term in normalized_url
-        for term in useful_terms
-    ):
-        # Format-only searches may not have a matching artist/title.
-        return False
-
-    return True
-
-
-class SearchWorker(QThread):
-    progress = Signal(str)
-    finished_results = Signal(object, object, object)
-
-    def __init__(self, sources, parts, parent=None):
-        super().__init__(parent)
-        self.sources = [dict(row) for row in sources]
-        self.parts = dict(parts)
-        self._stop_requested = False
-
-    def stop(self):
-        self._stop_requested = True
-
-    def run(self):
-        results = []
-        failed = []
-        query_terms = []
-
-        for key in (
-            "artist", "title", "album", "label", "catalog", "year"
-        ):
-            value = self.parts.get(key, "").strip()
-            if value:
-                query_terms.append(value)
-
-        record_format = self.parts.get("format", "")
-        if record_format and record_format != "Any format":
-            query_terms.append(record_format)
-
-        condition = self.parts.get("condition", "")
-        if condition and condition != "Any condition":
-            query_terms.append(condition)
-
-        seen_urls = set()
-
-        for source in self.sources:
-            if self._stop_requested:
-                break
-
-            source_name = source["name"]
-            self.progress.emit(f"Searching {source_name}...")
-
-            url = build_search_url(
-                source["url_template"],
-                self.parts.get("query", ""),
-                self.parts.get("artist", ""),
-                self.parts.get("title", ""),
-                self.parts.get("album", ""),
-                self.parts.get("year", ""),
-                self.parts.get("format", ""),
-                self.parts.get("label", ""),
-                self.parts.get("catalog", ""),
-            )
-
-            if not valid_http_url(url):
-                failed.append(source_name)
-                continue
-
-            try:
-                response = requests.get(
-                    url,
-                    timeout=18,
-                    headers={
-                        "User-Agent": USER_AGENT,
-                        "Accept": (
-                            "text/html,application/xhtml+xml,"
-                            "application/xml;q=0.9,*/*;q=0.8"
-                        ),
-                        "Accept-Language": "en-US,en;q=0.9,nl;q=0.8",
-                    },
-                )
-                response.raise_for_status()
-
-                content_type = response.headers.get(
-                    "Content-Type", ""
-                ).casefold()
-
-                if "html" not in content_type:
-                    failed.append(source_name)
-                    continue
-
-                soup = BeautifulSoup(response.text, "html.parser")
-
-                def add_candidate(title_text, product_url):
-                    title_text = " ".join(
-                        str(title_text or "").split()
-                    )
-                    product_url = urljoin(url, str(product_url or ""))
-
-                    if not product_link_is_plausible(
-                        title_text, product_url, query_terms
-                    ):
-                        return
-
-                    normalized_url = product_url.rstrip("/").casefold()
-                    if normalized_url in seen_urls:
-                        return
-
-                    seen_urls.add(normalized_url)
-                    results.append({
-                        "source": source_name,
-                        "title": title_text,
-                        "url": product_url,
-                    })
-
-                # Read structured product information when available.
-                for script in soup.find_all(
-                    "script", attrs={"type": "application/ld+json"}
-                ):
-                    raw_json = script.string or script.get_text(
-                        strip=True
-                    )
-                    if not raw_json:
-                        continue
-
-                    try:
-                        data = json.loads(raw_json)
-                    except (ValueError, TypeError):
-                        continue
-
-                    def process_jsonld(obj):
-                        if isinstance(obj, list):
-                            for child in obj:
-                                process_jsonld(child)
-                            return
-
-                        if not isinstance(obj, dict):
-                            return
-
-                        obj_type = obj.get("@type", [])
-                        if isinstance(obj_type, str):
-                            obj_type = [obj_type]
-
-                        is_product = any(
-                            str(item).casefold() == "product"
-                            for item in obj_type
-                        )
-
-                        if is_product:
-                            product_url = (
-                                obj.get("url") or obj.get("@id") or ""
-                            )
-
-                            if isinstance(product_url, str):
-                                add_candidate(
-                                    obj.get("name", ""),
-                                    product_url,
-                                )
-
-                        for value in obj.values():
-                            if isinstance(value, (dict, list)):
-                                process_jsonld(value)
-
-                    process_jsonld(data)
-
-                # Fall back to links that appear to be product listings.
-                for link in soup.find_all("a", href=True):
-                    if self._stop_requested:
-                        break
-
-                    title_text = " ".join(link.stripped_strings).strip()
-                    href = link.get("href", "").strip()
-
-                    if not href or href.startswith(
-                        ("#", "javascript:", "mailto:")
-                    ):
-                        continue
-
-                    product_url = urljoin(url, href)
-
-                    if product_url.rstrip("/") == url.rstrip("/"):
-                        continue
-
-                    add_candidate(title_text, product_url)
-
-            except requests.RequestException:
-                failed.append(source_name)
-            except (ValueError, TypeError, AttributeError):
-                failed.append(source_name)
-
-        self.finished_results.emit(results, failed, self.parts)
 
 
 class SourceDialog(QDialog):
     def __init__(self, parent=None, source=None):
         super().__init__(parent)
+
         self.setWindowTitle("Website / Store")
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(480)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -497,14 +250,14 @@ class SourceDialog(QDialog):
 
         layout.addWidget(QLabel(
             "Available placeholders: {query}, {artist}, {title}, "
-            "{album}, {year}, {format}, {label}, {catalog}, "
-            "{query_params}."
+            "{album}, {year}, {format}, {query_params}."
         ))
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
         )
+
         buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -524,7 +277,20 @@ class SourceDialog(QDialog):
             )
             return
 
-        if not validate_source_template(template):
+        test_url = template
+
+        for key, value in {
+            "{query}": "test",
+            "{artist}": "artist",
+            "{title}": "title",
+            "{album}": "album",
+            "{year}": "2020",
+            "{format}": "vinyl",
+            "{query_params}": "q=test",
+        }.items():
+            test_url = test_url.replace(key, value)
+
+        if not valid_http_url(test_url):
             QMessageBox.warning(
                 self,
                 "Invalid URL",
@@ -542,55 +308,13 @@ class SourceDialog(QDialog):
         )
 
 
-class SearchingDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("")
-        self.setWindowFlags(
-            Qt.WindowType.Dialog
-            | Qt.WindowType.CustomizeWindowHint
-            | Qt.WindowType.WindowTitleHint
-        )
-        self.setModal(False)
-        self.setFixedSize(240, 76)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-
-        self.label = QLabel("Searching...")
-        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.label.setStyleSheet(
-            "QLabel { font-size: 14px; font-weight: bold; }"
-        )
-        layout.addWidget(self.label)
-
-    def set_message(self, message):
-        self.label.setText(message)
-        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.adjustSize()
-        self.setFixedSize(max(240, self.sizeHint().width()), 76)
-
-    def center_over_parent(self):
-        if not self.parentWidget():
-            return
-
-        parent = self.parentWidget()
-        center = parent.frameGeometry().center()
-        self.move(
-            center.x() - self.width() // 2,
-            center.y() - self.height() // 2,
-        )
-
-
 class VinylFinder(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.worker = None
-        self.search_dialog = None
-
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
-        self.setMinimumSize(900, 620)
+        self.setMinimumSize(850, 560)
+        self.showMaximized()
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.create_search_tab(), "Search Records")
@@ -625,10 +349,24 @@ class VinylFinder(QMainWindow):
         self.year_edit.setPlaceholderText("e.g. 1977")
 
         self.format_combo = QComboBox()
-        self.format_combo.addItems(FORMAT_OPTIONS)
+        self.format_combo.addItems([
+            "Any vinyl format",
+            "LP",
+            "7-inch single",
+            "10-inch",
+            "12-inch single",
+            "Box set",
+        ])
 
         self.condition_combo = QComboBox()
-        self.condition_combo.addItems(CONDITION_OPTIONS)
+        self.condition_combo.addItems([
+            "Any condition",
+            "New",
+            "Near Mint",
+            "Very Good Plus",
+            "Very Good",
+            "Good",
+        ])
 
         self.min_price = QDoubleSpinBox()
         self.min_price.setRange(0, 100000)
@@ -674,17 +412,21 @@ class VinylFinder(QMainWindow):
         buttons.addWidget(search_btn)
         buttons.addWidget(products_btn)
         buttons.addWidget(clear_btn)
+
         layout.addLayout(buttons)
 
         layout.addWidget(QLabel(
             "Search Enabled Sources opens store search pages. "
-            "Search Products attempts to retrieve product listings."
+            "Search Products retrieves possible product listings."
         ))
 
         self.results_table = QTableWidget(0, 3)
         self.results_table.setHorizontalHeaderLabels([
-            "Website / Store", "Search URL", "Action"
+            "Website / Store",
+            "Search URL",
+            "Action",
         ])
+
         self.configure_table(self.results_table)
         self.results_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
@@ -693,17 +435,23 @@ class VinylFinder(QMainWindow):
 
         layout.addWidget(QLabel("Found Products"))
 
+        # No price column.
         self.product_table = QTableWidget(0, 3)
         self.product_table.setHorizontalHeaderLabels([
-            "Website / Store", "Product", "Action"
+            "Website / Store",
+            "Product",
+            "Action",
         ])
+
         self.configure_table(self.product_table)
         self.product_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
         )
         layout.addWidget(self.product_table, 1)
 
+        self.results_table.show()
         self.product_table.hide()
+
         return page
 
     @staticmethod
@@ -714,11 +462,9 @@ class VinylFinder(QMainWindow):
         table.setEditTriggers(
             QAbstractItemView.EditTrigger.NoEditTriggers
         )
-        table.setAlternatingRowColors(True)
         table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.ResizeToContents
         )
-        table.verticalHeader().setVisible(False)
 
     def current_query_parts(self):
         artist = self.artist_edit.text().strip()
@@ -727,14 +473,16 @@ class VinylFinder(QMainWindow):
         label = self.label_edit.text().strip()
         catalog = self.catalog_edit.text().strip()
         year = self.year_edit.text().strip()
-        record_format = self.format_combo.currentText()
-        condition = self.condition_combo.currentText()
 
         terms = [
             artist, title, album, label, catalog, year
         ]
+        terms = [term for term in terms if term]
 
-        if record_format != "Any format":
+        record_format = self.format_combo.currentText()
+        condition = self.condition_combo.currentText()
+
+        if record_format != "Any vinyl format":
             terms.append(record_format)
 
         if condition != "Any condition":
@@ -750,8 +498,6 @@ class VinylFinder(QMainWindow):
                 f"maximum price {self.max_price.value():.2f} EUR"
             )
 
-        query = " ".join(term for term in terms if term)
-
         return {
             "artist": artist,
             "title": title,
@@ -760,8 +506,7 @@ class VinylFinder(QMainWindow):
             "catalog": catalog,
             "year": year,
             "format": record_format,
-            "condition": condition,
-            "query": query,
+            "query": " ".join(terms),
         }
 
     def enabled_sources(self):
@@ -774,20 +519,24 @@ class VinylFinder(QMainWindow):
     def record_search(self, query):
         with connect_db() as conn:
             conn.execute(
-                "INSERT INTO searches (query, created_at) VALUES (?, ?)",
+                "INSERT INTO searches (query, created_at) "
+                "VALUES (?, ?)",
                 (
                     query,
                     datetime.now().isoformat(timespec="seconds"),
                 ),
             )
+
         self.refresh_history()
 
     def search_sources(self):
         parts = self.current_query_parts()
 
-        if not parts["query"].strip():
+        if not parts["query"]:
             QMessageBox.information(
-                self, "Search", "Enter at least one search criterion."
+                self,
+                "Search",
+                "Enter at least an artist or title.",
             )
             return
 
@@ -796,9 +545,8 @@ class VinylFinder(QMainWindow):
         self.results_table.setRowCount(0)
 
         self.record_search(parts["query"])
-        sources = self.enabled_sources()
 
-        for source in sources:
+        for source in self.enabled_sources():
             url = build_search_url(
                 source["url_template"],
                 parts["query"],
@@ -806,9 +554,7 @@ class VinylFinder(QMainWindow):
                 parts["title"],
                 parts["album"],
                 parts["year"],
-                parts["format"],
-                parts["label"],
-                parts["catalog"],
+                    parts["format"],
             )
 
             if not valid_http_url(url):
@@ -836,90 +582,261 @@ class VinylFinder(QMainWindow):
             f"Prepared {self.results_table.rowCount()} search destinations."
         )
 
-        if not sources:
-            QMessageBox.information(
-                self, "Search", "No enabled stores are configured."
-            )
-
     # ---------------------------------------------------------
     # SEARCH PRODUCTS
     # ---------------------------------------------------------
 
     def search_products(self):
-        if self.worker is not None and self.worker.isRunning():
-            return
-
         parts = self.current_query_parts()
 
-        if not parts["query"].strip():
+        # Use every field the user entered, not only artist/title/album.
+        search_keys = (
+            "artist", "title", "album", "label", "catalog", "year"
+        )
+        terms = [
+            parts.get(key, "").strip().casefold()
+            for key in search_keys
+            if parts.get(key, "").strip()
+        ]
+
+        record_format = self.format_combo.currentText()
+        condition = self.condition_combo.currentText()
+
+        if record_format != "Any vinyl format":
+            terms.append(record_format.casefold())
+
+        if condition != "Any condition":
+            terms.append(condition.casefold())
+
+        if not terms:
             QMessageBox.information(
                 self,
                 "Search Products",
-                "Enter at least one search criterion.",
+                "Enter at least one search criterion."
             )
             return
 
-        sources = self.enabled_sources()
-
-        if not sources:
-            QMessageBox.information(
-                self,
-                "Search Products",
-                "No enabled stores are configured.",
-            )
-            return
-
-        self.record_search(parts["query"])
         self.results_table.hide()
         self.product_table.show()
         self.product_table.setRowCount(0)
+        self.product_table.setColumnCount(3)
+        self.product_table.setHorizontalHeaderLabels(
+            ["Website / Store", "Product", "Action"]
+        )
+
+        self.product_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.product_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self.product_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents
+        )
 
         self.statusBar().showMessage("Searching enabled stores...")
+        QApplication.processEvents()
 
-        self.search_dialog = SearchingDialog(self)
-        self.search_dialog.center_over_parent()
-        self.search_dialog.show()
-        self.search_dialog.raise_()
+        with connect_db() as conn:
+            sources = conn.execute(
+                "SELECT * FROM sources WHERE enabled = 1 ORDER BY name"
+            ).fetchall()
 
-        self.worker = SearchWorker(sources, parts, self)
-        self.worker.progress.connect(self.on_search_progress)
-        self.worker.finished_results.connect(self.on_search_finished)
-        self.worker.finished.connect(self.cleanup_search_worker)
-        self.worker.start()
+        if not sources:
+            self.statusBar().showMessage("No enabled stores.")
+            QMessageBox.information(
+                self,
+                "Search Products",
+                "No enabled stores are configured."
+            )
+            return
 
-    def on_search_progress(self, message):
-        if self.search_dialog is not None:
-            self.search_dialog.set_message(message)
-            self.search_dialog.center_over_parent()
+        def normalize(value):
+            return " ".join(str(value or "").casefold().split())
 
-    def on_search_finished(self, results, failed, parts):
-        if self.search_dialog is not None:
-            self.search_dialog.close()
-            self.search_dialog.deleteLater()
-            self.search_dialog = None
+        def matches_terms(text):
+            normalized = normalize(text)
+            return bool(normalized) and all(
+                term in normalized for term in terms
+            )
 
-        self.product_table.setRowCount(0)
+        seen_urls = set()
+        failed = []
+        found = 0
 
-        for product in results:
+        def add_product(source_name, product_title, product_url):
+            nonlocal found
+
+            product_title = " ".join(
+                str(product_title or "").split()
+            )
+            product_url = (product_url or "").strip()
+
+            if len(product_title) < 3:
+                return
+
+            if not matches_terms(product_title):
+                return
+
+            if not valid_http_url(product_url):
+                return
+
+            parsed = urlparse(product_url)
+            if parsed.scheme not in ("http", "https"):
+                return
+
+            excluded_paths = (
+                "/search", "/account", "/cart", "/basket",
+                "/checkout", "/login", "/register", "/wishlist"
+            )
+            if any(
+                path in parsed.path.casefold()
+                for path in excluded_paths
+            ):
+                return
+
+            normalized_url = product_url.rstrip("/").casefold()
+            if normalized_url in seen_urls:
+                return
+
+            seen_urls.add(normalized_url)
+
             row = self.product_table.rowCount()
             self.product_table.insertRow(row)
-
             self.product_table.setItem(
-                row, 0, QTableWidgetItem(product["source"])
+                row, 0, QTableWidgetItem(source_name)
             )
             self.product_table.setItem(
-                row, 1, QTableWidgetItem(product["title"])
+                row, 1, QTableWidgetItem(product_title)
             )
 
-            button = QPushButton("Open Product")
-            button.product_url = product["url"]
-            button.clicked.connect(
-                lambda checked=False, target=product["url"]:
+            open_btn = QPushButton("Open Product")
+            open_btn.clicked.connect(
+                lambda checked=False, target=product_url:
                     webbrowser.open(target)
             )
-            self.product_table.setCellWidget(row, 2, button)
+            self.product_table.setCellWidget(row, 2, open_btn)
+            found += 1
 
-        found = len(results)
+        for source in sources:
+            url = build_search_url(
+                source["url_template"],
+                parts["query"],
+                parts.get("artist", ""),
+                parts.get("title", ""),
+                parts.get("album", ""),
+                parts.get("year", ""),
+                parts.get("format", "")
+            )
+
+            if not valid_http_url(url):
+                failed.append(source["name"])
+                continue
+
+            try:
+                response = requests.get(
+                    url,
+                    timeout=20,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/131.0.0.0 Safari/537.36"
+                        ),
+                        "Accept-Language": "en-US,en;q=0.9,nl;q=0.8",
+                    }
+                )
+                response.raise_for_status()
+
+                content_type = response.headers.get(
+                    "Content-Type", ""
+                ).casefold()
+                if "html" not in content_type:
+                    failed.append(source["name"])
+                    continue
+
+                soup = BeautifulSoup(
+                    response.text, "html.parser"
+                )
+
+                # Read structured product data when available.
+                for script in soup.find_all(
+                    "script",
+                    attrs={"type": "application/ld+json"}
+                ):
+                    raw_json = script.string or script.get_text(
+                        strip=True
+                    )
+                    if not raw_json:
+                        continue
+
+                    try:
+                        import json
+                        data = json.loads(raw_json)
+                    except (ValueError, TypeError):
+                        continue
+
+                    def process_jsonld(obj):
+                        if isinstance(obj, list):
+                            for child in obj:
+                                process_jsonld(child)
+                            return
+
+                        if not isinstance(obj, dict):
+                            return
+
+                        obj_type = obj.get("@type", [])
+                        if isinstance(obj_type, str):
+                            obj_type = [obj_type]
+
+                        if any(
+                            str(item).casefold() == "product"
+                            for item in obj_type
+                        ):
+                            name = obj.get("name", "")
+                            product_url = (
+                                obj.get("url") or obj.get("@id") or ""
+                            )
+
+                            if isinstance(product_url, str):
+                                product_url = urljoin(url, product_url)
+                            else:
+                                product_url = ""
+
+                            add_product(
+                                source["name"], name, product_url
+                            )
+
+                        for key, value in obj.items():
+                            if key != "@graph" and isinstance(
+                                value, (dict, list)
+                            ):
+                                process_jsonld(value)
+
+                    process_jsonld(data)
+
+                # Fallback: inspect individual links on the page.
+                for link in soup.find_all("a", href=True):
+                    title_text = " ".join(
+                        link.stripped_strings
+                    ).strip()
+
+                    if len(title_text) < 3:
+                        continue
+
+                    product_url = urljoin(url, link["href"])
+                    if product_url.rstrip("/") == url.rstrip("/"):
+                        continue
+
+                    add_product(
+                        source["name"], title_text, product_url
+                    )
+
+            except requests.RequestException:
+                failed.append(source["name"])
+
+        self.refresh_history()
+
         self.statusBar().showMessage(
             f"Found {found} possible product results."
         )
@@ -930,41 +847,21 @@ class VinylFinder(QMainWindow):
                 "Article Not Found",
                 "No matching product links were identified.\n\n"
                 "Try different search criteria. Some stores may "
-                "require JavaScript or block automatic retrieval.",
+                "require JavaScript or block automatic retrieval."
             )
         elif failed:
             QMessageBox.information(
                 self,
                 "Some stores could not be searched",
                 "Automatic retrieval failed for:\n"
-                + "\n".join(failed),
+                + "\n".join(failed)
             )
-
-    def cleanup_search_worker(self):
-        worker = self.worker
-        self.worker = None
-
-        if worker is not None:
-            worker.deleteLater()
-
-        if self.search_dialog is not None:
-            self.search_dialog.close()
-            self.search_dialog.deleteLater()
-            self.search_dialog = None
 
     # ---------------------------------------------------------
     # FILTERS
     # ---------------------------------------------------------
 
     def clear_filters(self):
-        if self.worker is not None and self.worker.isRunning():
-            QMessageBox.information(
-                self,
-                "Search in progress",
-                "Wait for the current search to finish before clearing.",
-            )
-            return
-
         for widget in (
             self.artist_edit,
             self.title_edit,
@@ -982,6 +879,7 @@ class VinylFinder(QMainWindow):
 
         self.results_table.setRowCount(0)
         self.product_table.setRowCount(0)
+
         self.results_table.show()
         self.product_table.hide()
 
@@ -1006,6 +904,7 @@ class VinylFinder(QMainWindow):
         layout.addWidget(self.sources_table)
 
         buttons = QHBoxLayout()
+
         actions = [
             ("Add Source", self.add_source),
             ("Edit Selected", self.edit_source),
@@ -1025,11 +924,16 @@ class VinylFinder(QMainWindow):
 
     def selected_source_id(self):
         row = self.sources_table.currentRow()
+
         if row < 0:
             return None
 
         item = self.sources_table.item(row, 0)
-        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+        return (
+            item.data(Qt.ItemDataRole.UserRole)
+            if item else None
+        )
 
     def refresh_sources(self):
         if not hasattr(self, "sources_table"):
@@ -1064,6 +968,7 @@ class VinylFinder(QMainWindow):
 
     def add_source(self):
         dialog = SourceDialog(self)
+
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -1077,7 +982,9 @@ class VinylFinder(QMainWindow):
                     (name, url, enabled),
                 )
         except sqlite3.IntegrityError as exc:
-            QMessageBox.warning(self, "Source Error", str(exc))
+            QMessageBox.warning(
+                self, "Source Error", str(exc)
+            )
             return
 
         self.refresh_sources()
@@ -1093,13 +1000,15 @@ class VinylFinder(QMainWindow):
 
         with connect_db() as conn:
             source = conn.execute(
-                "SELECT * FROM sources WHERE id = ?", (source_id,)
+                "SELECT * FROM sources WHERE id = ?",
+                (source_id,),
             ).fetchone()
 
         if not source:
             return
 
         dialog = SourceDialog(self, source)
+
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -1125,7 +1034,8 @@ class VinylFinder(QMainWindow):
 
         with connect_db() as conn:
             conn.execute(
-                "UPDATE sources SET enabled = 1 - enabled WHERE id = ?",
+                "UPDATE sources SET enabled = 1 - enabled "
+                "WHERE id = ?",
                 (source_id,),
             )
 
@@ -1144,8 +1054,6 @@ class VinylFinder(QMainWindow):
             self,
             "Delete Source",
             "Permanently remove the selected source?",
-            QMessageBox.StandardButton.Yes
-            | QMessageBox.StandardButton.No,
         )
 
         if answer != QMessageBox.StandardButton.Yes:
@@ -1153,7 +1061,8 @@ class VinylFinder(QMainWindow):
 
         with connect_db() as conn:
             conn.execute(
-                "DELETE FROM sources WHERE id = ?", (source_id,)
+                "DELETE FROM sources WHERE id = ?",
+                (source_id,),
             )
 
         self.refresh_sources()
@@ -1169,11 +1078,16 @@ class VinylFinder(QMainWindow):
         if not file_path:
             return
 
-        imported = skipped = invalid = 0
+        imported = 0
+        skipped = 0
+        invalid = 0
 
         try:
             with open(
-                file_path, "r", encoding="utf-8-sig", newline=""
+                file_path,
+                "r",
+                encoding="utf-8-sig",
+                newline="",
             ) as csv_file:
                 sample = csv_file.read(4096)
                 csv_file.seek(0)
@@ -1185,11 +1099,15 @@ class VinylFinder(QMainWindow):
                 except csv.Error:
                     dialect = csv.excel
 
-                reader = csv.DictReader(csv_file, dialect=dialect)
+                reader = csv.DictReader(
+                    csv_file, dialect=dialect
+                )
 
                 if not reader.fieldnames:
                     QMessageBox.warning(
-                        self, "CSV Import", "The CSV file has no header row."
+                        self,
+                        "CSV Import",
+                        "The CSV file has no header row.",
                     )
                     return
 
@@ -1211,15 +1129,37 @@ class VinylFinder(QMainWindow):
 
                 with connect_db() as conn:
                     for item in reader:
-                        name = (item.get("name") or "").strip()
+                        name = (
+                            item.get("name") or ""
+                        ).strip()
                         template = (
                             item.get("url_template") or ""
                         ).strip()
+
                         enabled_text = (
                             item.get("enabled") or "1"
                         ).strip().lower()
 
-                        if not name or not validate_source_template(template):
+                        if not name or not template:
+                            invalid += 1
+                            continue
+
+                        test_url = template
+
+                        for key, value in {
+                            "{query}": "test",
+                            "{artist}": "artist",
+                            "{title}": "title",
+                            "{album}": "album",
+                            "{year}": "2020",
+                            "{format}": "vinyl",
+                            "{query_params}": "q=test",
+                        }.items():
+                            test_url = test_url.replace(
+                                key, value
+                            )
+
+                        if not valid_http_url(test_url):
                             invalid += 1
                             continue
 
@@ -1247,9 +1187,11 @@ class VinylFinder(QMainWindow):
 
                         conn.execute(
                             "INSERT INTO sources "
-                            "(name, url_template, enabled) VALUES (?, ?, ?)",
+                            "(name, url_template, enabled) "
+                            "VALUES (?, ?, ?)",
                             (name, template, enabled),
                         )
+
                         imported += 1
 
             self.refresh_sources()
@@ -1282,18 +1224,17 @@ class VinylFinder(QMainWindow):
             "Title", "URL", "Notes"
         ])
         self.configure_table(self.favorites_table)
+
         self.favorites_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
         )
         self.favorites_table.horizontalHeader().setSectionResizeMode(
             2, QHeaderView.ResizeMode.Stretch
         )
+
         layout.addWidget(self.favorites_table)
 
         buttons = QHBoxLayout()
-
-        add_btn = QPushButton("Add Current Product")
-        add_btn.clicked.connect(self.add_current_favorite)
 
         open_btn = QPushButton("Open Selected URL")
         open_btn.clicked.connect(self.open_selected_favorite)
@@ -1301,11 +1242,14 @@ class VinylFinder(QMainWindow):
         delete_btn = QPushButton("Remove Favorite")
         delete_btn.clicked.connect(self.delete_favorite)
 
+        add_btn = QPushButton("Add Current Product")
+        add_btn.clicked.connect(self.add_current_favorite)
+
         buttons.addWidget(add_btn)
         buttons.addWidget(open_btn)
         buttons.addWidget(delete_btn)
-        layout.addLayout(buttons)
 
+        layout.addLayout(buttons)
         return page
 
     def refresh_favorites(self):
@@ -1324,7 +1268,9 @@ class VinylFinder(QMainWindow):
             self.favorites_table.insertRow(row)
 
             title = QTableWidgetItem(fav["title"])
-            title.setData(Qt.ItemDataRole.UserRole, fav["id"])
+            title.setData(
+                Qt.ItemDataRole.UserRole, fav["id"]
+            )
 
             self.favorites_table.setItem(row, 0, title)
             self.favorites_table.setItem(
@@ -1336,11 +1282,16 @@ class VinylFinder(QMainWindow):
 
     def selected_favorite_id(self):
         row = self.favorites_table.currentRow()
+
         if row < 0:
             return None
 
         item = self.favorites_table.item(row, 0)
-        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+        return (
+            item.data(Qt.ItemDataRole.UserRole)
+            if item else None
+        )
 
     def add_current_favorite(self):
         row = self.product_table.currentRow()
@@ -1360,6 +1311,8 @@ class VinylFinder(QMainWindow):
         if not source_item or not title_item or not button:
             return
 
+        # The Open Product button captures the target URL.
+        # Store the URL explicitly on the button when adding results.
         product_url = getattr(button, "product_url", "")
 
         if not valid_http_url(product_url):
@@ -1374,7 +1327,8 @@ class VinylFinder(QMainWindow):
             with connect_db() as conn:
                 conn.execute(
                     "INSERT INTO favorites "
-                    "(title, url, notes, created_at) VALUES (?, ?, ?, ?)",
+                    "(title, url, notes, created_at) "
+                    "VALUES (?, ?, ?, ?)",
                     (
                         title_item.text(),
                         product_url,
@@ -1384,7 +1338,9 @@ class VinylFinder(QMainWindow):
                 )
         except sqlite3.IntegrityError:
             QMessageBox.information(
-                self, "Favorites", "This product is already a favorite."
+                self,
+                "Favorites",
+                "This product is already a favorite.",
             )
             return
 
@@ -1392,10 +1348,12 @@ class VinylFinder(QMainWindow):
 
     def open_selected_favorite(self):
         row = self.favorites_table.currentRow()
+
         if row < 0:
             return
 
         item = self.favorites_table.item(row, 1)
+
         if item and valid_http_url(item.text()):
             webbrowser.open(item.text())
 
@@ -1404,13 +1362,16 @@ class VinylFinder(QMainWindow):
 
         if fav_id is None:
             QMessageBox.information(
-                self, "Favorites", "Select a favorite first."
+                self,
+                "Favorites",
+                "Select a favorite first.",
             )
             return
 
         with connect_db() as conn:
             conn.execute(
-                "DELETE FROM favorites WHERE id = ?", (fav_id,)
+                "DELETE FROM favorites WHERE id = ?",
+                (fav_id,),
             )
 
         self.refresh_favorites()
@@ -1431,6 +1392,7 @@ class VinylFinder(QMainWindow):
         self.history_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch
         )
+
         layout.addWidget(self.history_table)
 
         buttons = QHBoxLayout()
@@ -1443,8 +1405,8 @@ class VinylFinder(QMainWindow):
 
         buttons.addWidget(repeat_btn)
         buttons.addWidget(clear_btn)
-        layout.addLayout(buttons)
 
+        layout.addLayout(buttons)
         return page
 
     def refresh_history(self):
@@ -1463,7 +1425,9 @@ class VinylFinder(QMainWindow):
             self.history_table.insertRow(row)
 
             query_item = QTableWidgetItem(item["query"])
-            query_item.setData(Qt.ItemDataRole.UserRole, item["id"])
+            query_item.setData(
+                Qt.ItemDataRole.UserRole, item["id"]
+            )
 
             self.history_table.setItem(row, 0, query_item)
             self.history_table.setItem(
@@ -1475,11 +1439,14 @@ class VinylFinder(QMainWindow):
 
         if row < 0:
             QMessageBox.information(
-                self, "Search History", "Select a search first."
+                self,
+                "Search History",
+                "Select a search first.",
             )
             return
 
         item = self.history_table.item(row, 0)
+
         if not item:
             return
 
@@ -1494,8 +1461,6 @@ class VinylFinder(QMainWindow):
             self,
             "Clear History",
             "Delete all saved search history?",
-            QMessageBox.StandardButton.Yes
-            | QMessageBox.StandardButton.No,
         )
 
         if answer != QMessageBox.StandardButton.Yes:
@@ -1505,29 +1470,6 @@ class VinylFinder(QMainWindow):
             conn.execute("DELETE FROM searches")
 
         self.refresh_history()
-
-    # ---------------------------------------------------------
-    # APPLICATION LIFECYCLE
-    # ---------------------------------------------------------
-
-    def closeEvent(self, event):
-        if self.worker is not None and self.worker.isRunning():
-            answer = QMessageBox.question(
-                self,
-                "Search in progress",
-                "A search is still running. Close the application?",
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No,
-            )
-
-            if answer != QMessageBox.StandardButton.Yes:
-                event.ignore()
-                return
-
-            self.worker.stop()
-            self.worker.wait(25000)
-
-        event.accept()
 
 
 def main():
@@ -1541,7 +1483,6 @@ def main():
     window.showMaximized()
 
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()
