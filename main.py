@@ -554,7 +554,7 @@ class VinylFinder(QMainWindow):
                 parts["title"],
                 parts["album"],
                 parts["year"],
-                parts["format"],
+                    parts["format"],
             )
 
             if not valid_http_url(url):
@@ -589,97 +589,113 @@ class VinylFinder(QMainWindow):
     def search_products(self):
         parts = self.current_query_parts()
 
-        if not any(
-            parts.get(key, "").strip()
-            for key in ("artist", "title", "album")
-        ):
+        # Use every field the user entered, not only artist/title/album.
+        search_keys = (
+            "artist", "title", "album", "label", "catalog", "year"
+        )
+        terms = [
+            parts.get(key, "").strip().casefold()
+            for key in search_keys
+            if parts.get(key, "").strip()
+        ]
+
+        record_format = self.format_combo.currentText()
+        condition = self.condition_combo.currentText()
+
+        if record_format != "Any vinyl format":
+            terms.append(record_format.casefold())
+
+        if condition != "Any condition":
+            terms.append(condition.casefold())
+
+        if not terms:
             QMessageBox.information(
                 self,
                 "Search Products",
-                "Enter an artist, title or album first.",
+                "Enter at least one search criterion."
             )
             return
 
         self.results_table.hide()
         self.product_table.show()
         self.product_table.setRowCount(0)
+        self.product_table.setColumnCount(3)
+        self.product_table.setHorizontalHeaderLabels(
+            ["Website / Store", "Product", "Action"]
+        )
 
-        searching_popup = QProgressDialog(
-            "Searching...", "", 0, 0, self
+        self.product_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
         )
-        searching_popup.setWindowTitle("VinylFinder")
-        searching_popup.setCancelButton(None)
-        searching_popup.setMinimumDuration(0)
-        searching_popup.setAutoClose(False)
-        searching_popup.setAutoReset(False)
-        searching_popup.setWindowModality(
-            Qt.WindowModality.ApplicationModal
+        self.product_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
         )
-        searching_popup.setMinimumWidth(240)
-        searching_popup.setMaximumWidth(240)
-        searching_popup.show()
+        self.product_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents
+        )
+
+        self.statusBar().showMessage("Searching enabled stores...")
         QApplication.processEvents()
 
-        self.record_search(parts["query"])
+        with connect_db() as conn:
+            sources = conn.execute(
+                "SELECT * FROM sources WHERE enabled = 1 ORDER BY name"
+            ).fetchall()
 
-        terms = [
-            normalize(parts[key])
-            for key in ("artist", "title", "album")
-            if parts.get(key, "").strip()
-        ]
+        if not sources:
+            self.statusBar().showMessage("No enabled stores.")
+            QMessageBox.information(
+                self,
+                "Search Products",
+                "No enabled stores are configured."
+            )
+            return
 
-        failed = []
-        found = 0
-        seen_urls = set()
+        def normalize(value):
+            return " ".join(str(value or "").casefold().split())
 
-        def contains_requested_terms(text):
+        def matches_terms(text):
             normalized = normalize(text)
             return bool(normalized) and all(
                 term in normalized for term in terms
             )
 
-        def is_action(text):
-            normalized = normalize(text)
-            return any(
-                normalize(action) in normalized
-                for action in ACTION_TERMS
-            )
+        seen_urls = set()
+        failed = []
+        found = 0
 
-        def is_digital(text):
-            normalized = normalize(text)
-            return any(
-                normalize(term) in normalized
-                for term in DIGITAL_TERMS
-            )
-
-        def add_product(source_name, name, product_url):
+        def add_product(source_name, product_title, product_url):
             nonlocal found
 
-            name = " ".join(str(name or "").split())
-            product_url = str(product_url or "").strip()
+            product_title = " ".join(
+                str(product_title or "").split()
+            )
+            product_url = (product_url or "").strip()
 
-            if len(name) < 5:
+            if len(product_title) < 3:
                 return
 
-            if is_action(name) or is_digital(name):
-                return
-
-            if not contains_requested_terms(name):
+            if not matches_terms(product_title):
                 return
 
             if not valid_http_url(product_url):
                 return
 
             parsed = urlparse(product_url)
+            if parsed.scheme not in ("http", "https"):
+                return
 
+            excluded_paths = (
+                "/search", "/account", "/cart", "/basket",
+                "/checkout", "/login", "/register", "/wishlist"
+            )
             if any(
-                part in parsed.path.casefold()
-                for part in EXCLUDED_URL_PARTS
+                path in parsed.path.casefold()
+                for path in excluded_paths
             ):
                 return
 
             normalized_url = product_url.rstrip("/").casefold()
-
             if normalized_url in seen_urls:
                 return
 
@@ -687,47 +703,30 @@ class VinylFinder(QMainWindow):
 
             row = self.product_table.rowCount()
             self.product_table.insertRow(row)
-
             self.product_table.setItem(
                 row, 0, QTableWidgetItem(source_name)
             )
             self.product_table.setItem(
-                row, 1, QTableWidgetItem(name)
+                row, 1, QTableWidgetItem(product_title)
             )
 
-            button = QPushButton("Open Product")
-            button.product_url = product_url
-            button.clicked.connect(
+            open_btn = QPushButton("Open Product")
+            open_btn.clicked.connect(
                 lambda checked=False, target=product_url:
                     webbrowser.open(target)
             )
-            self.product_table.setCellWidget(row, 2, button)
-           
+            self.product_table.setCellWidget(row, 2, open_btn)
             found += 1
 
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            ),
-            "Accept": (
-                "text/html,application/xhtml+xml,"
-                "application/json;q=0.9,*/*;q=0.8"
-            ),
-            "Accept-Language": "en-US,en;q=0.9,nl;q=0.8",
-        })
-
-        for source in self.enabled_sources():
+        for source in sources:
             url = build_search_url(
                 source["url_template"],
                 parts["query"],
-                parts["artist"],
-                parts["title"],
-                parts["album"],
-                parts["year"],
-                parts["format"],
+                parts.get("artist", ""),
+                parts.get("title", ""),
+                parts.get("album", ""),
+                parts.get("year", ""),
+                parts.get("format", "")
             )
 
             if not valid_http_url(url):
@@ -735,13 +734,23 @@ class VinylFinder(QMainWindow):
                 continue
 
             try:
-                response = session.get(url, timeout=20)
+                response = requests.get(
+                    url,
+                    timeout=20,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/131.0.0.0 Safari/537.36"
+                        ),
+                        "Accept-Language": "en-US,en;q=0.9,nl;q=0.8",
+                    }
+                )
                 response.raise_for_status()
 
                 content_type = response.headers.get(
                     "Content-Type", ""
                 ).casefold()
-
                 if "html" not in content_type:
                     failed.append(source["name"])
                     continue
@@ -750,111 +759,102 @@ class VinylFinder(QMainWindow):
                     response.text, "html.parser"
                 )
 
-                # Structured Product data, when available.
-                def process_jsonld(obj):
-                    if isinstance(obj, list):
-                        for child in obj:
-                            process_jsonld(child)
-                        return
-
-                    if not isinstance(obj, dict):
-                        return
-
-                    graph = obj.get("@graph")
-                    if isinstance(graph, (dict, list)):
-                        process_jsonld(graph)
-
-                    obj_type = obj.get("@type", [])
-                    if not isinstance(obj_type, list):
-                        obj_type = [obj_type]
-
-                    if any(
-                        str(value).casefold() == "product"
-                        for value in obj_type
-                    ):
-                        name = obj.get("name", "")
-                        product_url = obj.get("url", "")
-
-                        if not product_url:
-                            product_url = obj.get("@id", "")
-
-                        if isinstance(product_url, str):
-                            product_url = urljoin(
-                                response.url, product_url
-                            )
-                        else:
-                            product_url = ""
-
-                        add_product(
-                            source["name"], name, product_url
-                        )
-
-                    for key, value in obj.items():
-                        if key != "@graph" and isinstance(
-                            value, (dict, list)
-                        ):
-                            process_jsonld(value)
-
+                # Read structured product data when available.
                 for script in soup.find_all(
                     "script",
-                    attrs={"type": "application/ld+json"},
+                    attrs={"type": "application/ld+json"}
                 ):
-                    raw = script.string or script.get_text(
+                    raw_json = script.string or script.get_text(
                         strip=True
                     )
-
-                    if not raw:
+                    if not raw_json:
                         continue
 
                     try:
-                        process_jsonld(json.loads(raw))
-                    except (ValueError, TypeError, RecursionError):
+                        import json
+                        data = json.loads(raw_json)
+                    except (ValueError, TypeError):
                         continue
 
-                # HTML fallback. Only the link's own text is used;
-                # surrounding page text is not treated as a title.
+                    def process_jsonld(obj):
+                        if isinstance(obj, list):
+                            for child in obj:
+                                process_jsonld(child)
+                            return
+
+                        if not isinstance(obj, dict):
+                            return
+
+                        obj_type = obj.get("@type", [])
+                        if isinstance(obj_type, str):
+                            obj_type = [obj_type]
+
+                        if any(
+                            str(item).casefold() == "product"
+                            for item in obj_type
+                        ):
+                            name = obj.get("name", "")
+                            product_url = (
+                                obj.get("url") or obj.get("@id") or ""
+                            )
+
+                            if isinstance(product_url, str):
+                                product_url = urljoin(url, product_url)
+                            else:
+                                product_url = ""
+
+                            add_product(
+                                source["name"], name, product_url
+                            )
+
+                        for key, value in obj.items():
+                            if key != "@graph" and isinstance(
+                                value, (dict, list)
+                            ):
+                                process_jsonld(value)
+
+                    process_jsonld(data)
+
+                # Fallback: inspect individual links on the page.
                 for link in soup.find_all("a", href=True):
-                    name = " ".join(link.stripped_strings).strip()
+                    title_text = " ".join(
+                        link.stripped_strings
+                    ).strip()
 
-                    if len(name) < 8:
+                    if len(title_text) < 3:
                         continue
 
-                    if is_action(name) or is_digital(name):
+                    product_url = urljoin(url, link["href"])
+                    if product_url.rstrip("/") == url.rstrip("/"):
                         continue
-
-                    product_url = urljoin(
-                        response.url, link["href"]
-                    )
 
                     add_product(
-                        source["name"], name, product_url
+                        source["name"], title_text, product_url
                     )
 
             except requests.RequestException:
                 failed.append(source["name"])
 
-        session.close()
-
-        searching_popup.close()
-        searching_popup.deleteLater()
-        QApplication.processEvents()
+        self.refresh_history()
 
         self.statusBar().showMessage(
             f"Found {found} possible product results."
         )
 
-        if failed:
-            QMessageBox.information(
-                self,
-                "Article Not Found",
-                "Article Not Found",
-            )
-
         if found == 0:
             QMessageBox.information(
                 self,
                 "Article Not Found",
-                "Article Not Found",
+                "No matching product links were identified.\n\n"
+                "Try different search criteria. Some stores may "
+                "require JavaScript or block automatic retrieval."
+            )
+        elif failed:
+            QMessageBox.information(
+                self,
+                "Some stores could not be searched",
+                "Automatic retrieval failed for:\n"
+                + "\n".join(failed)
             )
 
     # ---------------------------------------------------------
